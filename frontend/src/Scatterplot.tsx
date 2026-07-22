@@ -1,4 +1,4 @@
-import createREGL from "regl";
+import createREGL, { type Buffer, type Regl } from "regl";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "./ui";
 
@@ -60,13 +60,14 @@ export function Scatterplot({
 }: ScatterplotProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const renderRef = useRef<(() => void) | null>(null);
-  const colorBufferRef = useRef<{ subdata(data: Float32Array): void } | null>(null);
+  const colorBufferRef = useRef<Buffer | null>(null);
   const selectionBufferRef = useRef<{ subdata(data: Float32Array): void } | null>(null);
   const gestureRef = useRef<Gesture | null>(null);
   const [dimensions, setDimensions] = useState({ width: 1, height: 1 });
   const [view, setView] = useState<ViewState>({ scale: 1, translate: [0, 0] });
   const [lassoEnabled, setLassoEnabled] = useState(false);
   const [lasso, setLasso] = useState<Point[]>([]);
+  const [plotError, setPlotError] = useState("");
 
   const normalized = useMemo(() => {
     if (coordinates.length === 0) return [];
@@ -89,17 +90,32 @@ export function Scatterplot({
     ] as [number, number]);
   }, [coordinates]);
 
+  const safeColors = useMemo(() => {
+    if (colors.length === normalized.length * 4) return colors;
+    const fallback = new Float32Array(normalized.length * 4);
+    for (let index = 0; index < normalized.length; index += 1) {
+      fallback.set([0.38, 0.45, 0.53, 0.72], index * 4);
+    }
+    return fallback;
+  }, [colors, normalized.length]);
+
   const viewRef = useRef(view);
   viewRef.current = view;
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || normalized.length === 0) return;
-    const regl = createREGL({ canvas, attributes: { antialias: true, alpha: false } });
+    let regl: Regl;
+    try {
+      regl = createREGL({ canvas, attributes: { antialias: false, alpha: false } });
+    } catch (error) {
+      setPlotError(error instanceof Error ? error.message : "WebGL is unavailable");
+      return;
+    }
     const positions = new Float32Array(normalized.flat());
     const selection = new Float32Array(normalized.length);
     const positionBuffer = regl.buffer(positions);
-    const colorBuffer = regl.buffer(colors);
+    const colorBuffer = regl.buffer({ data: safeColors, usage: "dynamic" });
     const selectionBuffer = regl.buffer(selection);
     colorBufferRef.current = colorBuffer;
     selectionBufferRef.current = selectionBuffer;
@@ -163,10 +179,14 @@ export function Scatterplot({
     });
 
     const render = () => {
-      regl.poll();
-      regl.clear({ color: [0.985, 0.988, 0.99, 1], depth: 1 });
-      drawPoints({ ...viewRef.current, onlySelected: 0 });
-      drawPoints({ ...viewRef.current, onlySelected: 1 });
+      try {
+        regl.poll();
+        regl.clear({ color: [0.985, 0.988, 0.99, 1], depth: 1 });
+        drawPoints({ ...viewRef.current, onlySelected: 0 });
+        drawPoints({ ...viewRef.current, onlySelected: 1 });
+      } catch (error) {
+        setPlotError(error instanceof Error ? error.message : "The plot renderer failed");
+      }
     };
     renderRef.current = render;
     const resize = () => {
@@ -177,11 +197,13 @@ export function Scatterplot({
       setDimensions({ width: rect.width, height: rect.height });
       render();
     };
-    const observer = new ResizeObserver(resize);
-    observer.observe(canvas);
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(resize) : null;
+    if (observer) observer.observe(canvas);
+    else window.addEventListener("resize", resize);
     resize();
     return () => {
-      observer.disconnect();
+      observer?.disconnect();
+      if (!observer) window.removeEventListener("resize", resize);
       renderRef.current = null;
       colorBufferRef.current = null;
       selectionBufferRef.current = null;
@@ -190,9 +212,9 @@ export function Scatterplot({
   }, [normalized]);
 
   useEffect(() => {
-    colorBufferRef.current?.subdata(colors);
+    colorBufferRef.current?.(safeColors);
     renderRef.current?.();
-  }, [colors]);
+  }, [safeColors]);
 
   useEffect(() => {
     const selection = new Float32Array(normalized.length);
@@ -313,25 +335,33 @@ export function Scatterplot({
         <span>Shift add / Alt subtract / Esc clear</span>
       </div>
       <div className="scatter-stage">
-        <canvas
-          ref={canvasRef}
-          aria-label="Observation scatterplot"
-          tabIndex={0}
-          onDoubleClick={resetView}
-          onPointerDown={handlePointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={handlePointerUp}
-          onPointerCancel={() => {
-            gestureRef.current = null;
-            setLasso([]);
-          }}
-          onWheel={handleWheel}
-          onKeyDown={(event) => {
-            if (event.key !== "Escape") return;
-            event.preventDefault();
-            onClearSelection();
-          }}
-        />
+        {plotError ? (
+          <div className="plot-fallback" role="alert">
+            <strong>Scatterplot unavailable</strong>
+            <span>{plotError}</span>
+            <Button onClick={() => window.location.reload()}>Retry</Button>
+          </div>
+        ) : (
+          <canvas
+            ref={canvasRef}
+            aria-label="Observation scatterplot"
+            tabIndex={0}
+            onDoubleClick={resetView}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={() => {
+              gestureRef.current = null;
+              setLasso([]);
+            }}
+            onWheel={handleWheel}
+            onKeyDown={(event) => {
+              if (event.key !== "Escape") return;
+              event.preventDefault();
+              onClearSelection();
+            }}
+          />
+        )}
         {lasso.length > 1 && (
           <svg className="lasso-overlay" viewBox={`0 0 ${dimensions.width} ${dimensions.height}`}>
             <polyline points={lasso.map((point) => `${point.x},${point.y}`).join(" ")} />

@@ -138,8 +138,13 @@ function Workbench({ projectId }: { projectId: string }) {
     const controller = new AbortController();
     getProject(projectId, controller.signal)
       .then(async (detail) => {
+        const loadedPoints = await getPoints(detail.points_url, controller.signal);
+        if (loadedPoints.observation_ids.length !== loadedPoints.coordinates.length) {
+          throw new Error("Point coordinates do not match the observation index");
+        }
+        setColorResult(uniformColors(loadedPoints.observation_ids.length));
         setProject(detail);
-        setPoints(await getPoints(detail.points_url, controller.signal));
+        setPoints(loadedPoints);
       })
       .catch((error: unknown) => {
         if (!controller.signal.aborted) {
@@ -153,11 +158,6 @@ function Workbench({ projectId }: { projectId: string }) {
     if (!points) return;
     setColorTitle(title);
     setColorResult(colorValues(values, points.observation_ids.length));
-  }, [points]);
-
-  useEffect(() => {
-    if (!points) return;
-    setColorResult(uniformColors(points.observation_ids.length));
   }, [points]);
 
   if (loadError) {
@@ -316,6 +316,19 @@ function LoadedWorkbench({
               <p>{project.description}</p>
             </section>
           )}
+          <section className="replay-section">
+            <div className="section-heading"><span>Hierarchical replay</span></div>
+            <dl className="replay-stats">
+              <dt>Entities</dt>
+              <dd>{formatCount(project.hierarchy_summary.entities)}</dd>
+              <dt>Explicit decisions</dt>
+              <dd>{formatCount(project.hierarchy_summary.explicit_decisions)}</dd>
+              <dt>Derived ancestors</dt>
+              <dd>{formatCount(project.hierarchy_summary.derived_ancestors)}</dd>
+              <dt>Derived intersections</dt>
+              <dd>{formatCount(project.hierarchy_summary.derived_intersections)}</dd>
+            </dl>
+          </section>
         </aside>
 
         <section className="plot-panel">

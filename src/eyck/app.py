@@ -181,6 +181,7 @@ def create_app(
             embeddings=[NamedInput(id=item.id, obsm=item.obsm, dimensions=project.input_dimensions[item.id]) for item in project.spec.embeddings],
             modalities=[NamedInput(id=item.id, obsm=item.obsm, dimensions=project.input_dimensions[item.id]) for item in project.spec.modalities],
             identities=project.identities,
+            hierarchy_summary=project.hierarchy_summary(),
             points_url=f"{base}/points?embedding={first_embedding.id}",
             features_url=f"{base}/features",
             memberships_url=f"{base}/memberships",

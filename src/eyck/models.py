@@ -145,6 +145,15 @@ class RestartResponse(StrictModel):
     restarting: bool
 
 
+class HierarchySummary(StrictModel):
+    explicit_decisions: int
+    materialized_decisions: int
+    supported_observations: int
+    entities: int
+    derived_ancestors: int
+    derived_intersections: int
+
+
 class AnnotationSummary(StrictModel):
     project_id: str
     title: str
@@ -181,6 +190,7 @@ class AnnotationDetail(StrictModel):
     embeddings: list[NamedInput]
     modalities: list[NamedInput]
     identities: IdentitySet
+    hierarchy_summary: HierarchySummary
     points_url: str
     features_url: str
     memberships_url: str

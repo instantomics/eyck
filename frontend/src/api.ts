@@ -29,14 +29,17 @@ export class ApiError extends Error {
 }
 
 async function readResponse<T>(response: Response): Promise<T> {
-  const text = await response.text();
   let payload: unknown = null;
-  if (text) {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (contentType.includes("application/json")) {
     try {
-      payload = JSON.parse(text);
+      payload = await response.json();
     } catch {
-      payload = text;
+      payload = null;
     }
+  } else {
+    const text = await response.text();
+    payload = text || null;
   }
   if (!response.ok) {
     let message = response.statusText || `Request failed with status ${response.status}`;

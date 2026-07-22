@@ -29,6 +29,14 @@ def test_typed_index_detail_points_and_features(client: TestClient):
     assert detail["identities"]["source_sha256"]
     assert detail["identities"]["observation_index_sha256"]
     assert detail["identities"]["feature_index_sha256"]
+    assert detail["hierarchy_summary"] == {
+        "explicit_decisions": 9,
+        "materialized_decisions": 12,
+        "supported_observations": 3,
+        "entities": 3,
+        "derived_ancestors": 0,
+        "derived_intersections": 3,
+    }
     assert detail["metadata_columns"] == ["sample", "score"]
     assert detail["modalities"] == [{"id": "crispr", "obsm": "X_crispr", "dimensions": 1}]
 
@@ -60,6 +68,17 @@ def test_generated_initial_wide_and_long_entity_import(tmp_path: Path):
     indexed_manifest = write_project(tmp_path / "indexed", initial="long-index")
     indexed = EyckProject(discover_projects([indexed_manifest])["cells"]).current_memberships()
     assert {(row.observation_id, row.entity_id) for row in indexed.rows} == {("d1", "left"), ("d1", "right")}
+
+
+def test_entity_ids_allow_biological_separators(project_root: Path):
+    project = EyckProject(discover_projects([project_root])["cells"])
+    current = project.current_memberships()
+    row = current.rows[0].model_copy(update={"entity_id": "hep:0/subunit"})
+    project.validate_rows([row])
+
+    invalid = row.model_copy(update={"entity_id": "hep:0\ninvalid"})
+    with pytest.raises(ProjectError, match="control characters"):
+        project.validate_rows([invalid])
 
 
 def test_draft_save_revision_export_and_immutable_h5ad(project_root: Path, mutation_headers):

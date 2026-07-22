@@ -30,6 +30,7 @@ from .models import (
     FeatureHit,
     FeatureSearch,
     FeatureValues,
+    HierarchySummary,
     IdentitySet,
     MembershipDocument,
     NamedInput,
@@ -416,8 +417,10 @@ class EyckProject:
                 validate_safe_id(row.decision_view_id, "view")
             except DiscoveryError as exc:
                 raise ProjectError(str(exc)) from exc
-            if not row.entity_id:
-                raise ProjectError("entity_id must not be empty")
+            if not row.entity_id or len(row.entity_id) > 128:
+                raise ProjectError("entity_id must contain between 1 and 128 characters")
+            if any(ord(character) < 32 or ord(character) == 127 for character in row.entity_id):
+                raise ProjectError("entity_id must not contain control characters")
             if row.observation_id not in observations:
                 raise ProjectError(f"unknown observation ID: {row.observation_id}")
             if row.label_id not in labels:
@@ -521,6 +524,20 @@ class EyckProject:
                         )
                         changed = True
         return sorted(materialized.values(), key=lambda row: (row.support_id, row.observation_id, row.entity_id, row.label_id))
+
+    def hierarchy_summary(self) -> HierarchySummary:
+        current = self.current_memberships()
+        materialized = self._materialize(current.rows)
+        return HierarchySummary(
+            explicit_decisions=len(current.rows),
+            materialized_decisions=len(materialized),
+            supported_observations=len({row.observation_id for row in current.rows}),
+            entities=len({(row.observation_id, row.entity_id) for row in current.rows}),
+            derived_ancestors=sum(row.provenance == "derived_ancestor" for row in materialized),
+            derived_intersections=sum(
+                row.provenance == "derived_intersection" for row in materialized
+            ),
+        )
 
     def export(self, expected_revision: str) -> ExportResponse:
         with self.writer_lock():

@@ -39,6 +39,14 @@ export interface ProjectDetail {
   n_observations: number;
   n_features: number;
   labels: LabelDescriptor[];
+  hierarchy_summary: {
+    explicit_decisions: number;
+    materialized_decisions: number;
+    supported_observations: number;
+    entities: number;
+    derived_ancestors: number;
+    derived_intersections: number;
+  };
   metadata_columns: Descriptor[];
   modalities: Descriptor[];
   points_url: string;
