@@ -1,31 +1,10 @@
-from .utils import (
-    get_git_root,
-    get_output,
-    get_code,
-    get_results,
-    save,
-    Unpickler,
-    load,
-)
-from . import utils
-from . import flow
-from . import modalities
-m = modalities
+"""Eyck standalone single-cell annotation application."""
 
-# from . import encoder
-from . import processes
+from importlib.metadata import PackageNotFoundError, version
 
-__all__ = [
-    "get_git_root",
-    "get_output",
-    "get_code",
-    "get_results",
-    "save",
-    "Unpickler",
-    "load",
-    "utils",
-    "flow",
-    "modalities",
-    "processes",
-    "m"
-]
+try:
+    __version__ = version("eyck")
+except PackageNotFoundError:  # pragma: no cover - source tree without installation
+    __version__ = "0+unknown"
+
+__all__ = ["__version__"]
