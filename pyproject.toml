@@ -22,7 +22,7 @@ dependencies = [
     "filelock>=3.13",
     "numpy>=1.26",
     "pandas>=2.1",
-    "polyptich @ https://github.com/zouter/polyptich/releases/download/v0.0.21/polyptich-0.0.21-py3-none-any.whl",
+    "polyptich",
     "pyarrow>=15",
     "pydantic>=2.7",
     "scipy>=1.12",
@@ -33,8 +33,8 @@ readme = "README.md"
 license = "MIT"
 
 [project.urls]
-"Homepage" = "https://github.com/zouter/eyck"
-"Bug Tracker" = "https://github.com/zouter/eyck/issues"
+"Homepage" = "https://github.com/instantomics/eyck"
+"Bug Tracker" = "https://github.com/instantomics/eyck/issues"
 
 [project.scripts]
 eyck = "eyck.cli:main"
@@ -64,6 +64,9 @@ test = [
     "pytest",
     "ruff",
 ]
+
+[tool.uv.sources]
+polyptich = { git = "ssh://git@github.com/instantomics/polyptich.git" }
 
 [tool.setuptools.package-data]
 eyck = ["web/assets/*"]
