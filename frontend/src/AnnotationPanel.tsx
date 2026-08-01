@@ -4,7 +4,9 @@ import type {
   MembershipDraft,
   MembershipState,
   PointsPayload,
-  Scalar
+  SavedSelection,
+  Scalar,
+  Zoom
 } from "./types";
 import { Badge, Button, Field, Notice, PanelHeader } from "./ui";
 
@@ -12,9 +14,13 @@ interface AnnotationPanelProps {
   labels: LabelDescriptor[];
   points: PointsPayload;
   activeIndex: number | null;
-  selectedObservationIds: string[];
+  focusedSelection: SavedSelection | null;
+  zoom: Zoom;
   draft: MembershipDraft | null;
   origin: string;
+  destructiveDisabled: boolean;
+  destructiveDisabledReason: string;
+  onOpenLabels: () => void;
   onApply: (entityId: string, labelId: string, state: MembershipState) => void;
 }
 
@@ -28,9 +34,13 @@ export function AnnotationPanel({
   labels,
   points,
   activeIndex,
-  selectedObservationIds,
+  focusedSelection,
+  zoom,
   draft,
   origin,
+  destructiveDisabled,
+  destructiveDisabledReason,
+  onOpenLabels,
   onApply
 }: AnnotationPanelProps) {
   const entityIds = useMemo(() => {
@@ -43,11 +53,15 @@ export function AnnotationPanel({
   const labelDepths = useMemo(() => {
     const byId = new Map(labels.map((label) => [label.label_id, label]));
     const depths = new Map<string, number>();
+    const visiting = new Set<string>();
     const depth = (labelId: string): number => {
       const cached = depths.get(labelId);
       if (cached !== undefined) return cached;
+      if (visiting.has(labelId)) return 0;
+      visiting.add(labelId);
       const parents = byId.get(labelId)?.parents ?? [];
       const value = parents.length === 0 ? 0 : 1 + Math.max(...parents.map(depth));
+      visiting.delete(labelId);
       depths.set(labelId, value);
       return value;
     };
@@ -64,16 +78,16 @@ export function AnnotationPanel({
   const entityValid = entityId.length > 0
     && entityId.length <= 128
     && !/[\u0000-\u001f\u007f]/.test(entityId);
-  const activeObservationId = activeIndex === null ? null : points.observation_ids[activeIndex];
+  const selectedObservationIds = focusedSelection?.observation_ids ?? [];
   const selectedSet = useMemo(() => new Set(selectedObservationIds), [selectedObservationIds]);
+  const activeObservationId = activeIndex === null ? null : points.observation_ids[activeIndex];
 
   const stateForLabel = (labelId: string): MembershipState | "mixed" | null => {
-    if (!draft || selectedSet.size === 0) return null;
-    const states = selectedObservationIds.map((observationId) => draft.rows.find((row) => (
-      row.observation_id === observationId
-      && row.entity_id === entityId
-      && row.label_id === labelId
-    ))?.state ?? "unreviewed");
+    if (!draft || !focusedSelection || selectedSet.size === 0) return null;
+    const rows = new Map(draft.rows
+      .filter((row) => row.support_id === focusedSelection.id && row.entity_id === entityId && row.label_id === labelId)
+      .map((row) => [row.observation_id, row.state]));
+    const states = selectedObservationIds.map((id) => rows.get(id) ?? "unreviewed");
     return states.every((state) => state === states[0]) ? states[0] : "mixed";
   };
 
@@ -82,22 +96,17 @@ export function AnnotationPanel({
     index: number,
     labelId: string
   ): void => {
-    const states: Record<string, MembershipState> = {
-      p: "present",
-      a: "absent",
-      u: "unreviewed"
-    };
+    const states: Record<string, MembershipState> = { p: "present", a: "absent", u: "unreviewed" };
     const state = states[event.key.toLowerCase()];
-    if (state) {
-      if (!entityValid || !draft) return;
+    const derived = (labels.find((label) => label.label_id === labelId)?.parents.length ?? 0) > 1;
+    if (state && entityValid && draft && focusedSelection && !derived) {
       event.preventDefault();
       onApply(entityId, labelId, state);
       return;
     }
     if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
     event.preventDefault();
-    const offset = event.key === "ArrowDown" ? 1 : -1;
-    const next = Math.max(0, Math.min(labels.length - 1, index + offset));
+    const next = Math.max(0, Math.min(labels.length - 1, index + (event.key === "ArrowDown" ? 1 : -1)));
     labelRows.current[next]?.focus();
   };
 
@@ -105,19 +114,22 @@ export function AnnotationPanel({
     <aside className="annotation-panel panel">
       <PanelHeader
         title="Annotation"
-        meta={<Badge tone={selectedObservationIds.length > 0 ? "success" : "default"}>
-          {selectedObservationIds.length} selected
-        </Badge>}
+        meta={<Button disabled={destructiveDisabled} title={destructiveDisabled ? destructiveDisabledReason : "Edit label identities"} onClick={onOpenLabels}>Edit label DAG</Button>}
       />
       <div className="annotation-body">
-        {selectedObservationIds.length === 0 ? (
-          <Notice>Select a point or draw a lasso to start annotating.</Notice>
+        {!focusedSelection ? (
+          <Notice>
+            Focus a saved selection to annotate it. Transient lasso cells must be named and saved first.
+          </Notice>
         ) : (
           <>
-            <Field
-              label="Entity ID"
-              hint="Choose an existing biological entity or type a new ID."
-            >
+            <div className="annotation-target">
+              <span>Named support</span>
+              <strong>{focusedSelection.name}</strong>
+              <code>{focusedSelection.id}</code>
+              <Badge tone="success">{focusedSelection.observation_count} cells</Badge>
+            </div>
+            <Field label="Entity ID" hint="Overlapping entities and labels are retained independently.">
               <input
                 className="pt-input"
                 list="entity-options"
@@ -131,32 +143,28 @@ export function AnnotationPanel({
             {!entityValid && <p className="inline-error">Use 1-128 characters without control characters.</p>}
             <div className="label-heading">
               <span>Label state</span>
-              <small>P/A/U set state · ↑/↓ navigate · {selectedObservationIds.length} selected</small>
+              <small>P/A/U set state; arrows navigate</small>
             </div>
             <div className="label-list">
               {labels.map((label, index) => {
                 const current = stateForLabel(label.label_id);
+                const derived = label.parents.length > 1;
                 return (
                   <div
                     className="label-row"
                     key={label.label_id}
                     ref={(element) => { labelRows.current[index] = element; }}
                     tabIndex={0}
-                    aria-keyshortcuts="P A U ArrowUp ArrowDown"
+                    aria-keyshortcuts={derived ? "ArrowUp ArrowDown" : "P A U ArrowUp ArrowDown"}
                     style={{ paddingLeft: 6 + (labelDepths.get(label.label_id) ?? 0) * 12 }}
                     onKeyDown={(event) => handleLabelKey(event, index, label.label_id)}
                   >
                     <div className="label-name">
                       <strong>{label.display_name}</strong>
                       <code>{label.label_id}</code>
-                      {label.parents.length > 0 && (
-                        <small>
-                          {label.parents.length > 1 && <span className="intersection-badge">intersection</span>}
-                          Parents: {label.parents.join(" + ")}
-                        </small>
-                      )}
+                      {label.parents.length > 0 && <small>Parents: {label.parents.join(" + ")}</small>}
                     </div>
-                    <div className="state-buttons" aria-label={`${label.display_name} state`}>
+                    {derived ? <div className="derived-state" title="Multiple-parent labels are computed from their parent decisions and cannot be edited directly."><strong>Derived</strong><span>from {label.parents.length} parents</span></div> : <div className="state-buttons" aria-label={`${label.display_name} state`}>
                       {(["present", "absent", "unreviewed"] as MembershipState[]).map((state) => (
                         <Button
                           key={state}
@@ -169,7 +177,7 @@ export function AnnotationPanel({
                           {state === "present" ? "P" : state === "absent" ? "A" : "U"}
                         </Button>
                       ))}
-                    </div>
+                    </div>}
                   </div>
                 );
               })}
@@ -180,28 +188,22 @@ export function AnnotationPanel({
       </div>
       <section className="observation-inspector">
         <div className="section-heading">
-          <span>Observation</span>
+          <span>Observation in {zoom.name}</span>
           {activeObservationId && <code>{activeObservationId}</code>}
         </div>
         {activeIndex === null ? (
           <p className="panel-empty">Click a point to inspect its values.</p>
         ) : (
           <dl className="value-grid">
-            <dt>Embedding x</dt>
-            <dd>{displayValue(points.coordinates[activeIndex]?.[0])}</dd>
-            <dt>Embedding y</dt>
-            <dd>{displayValue(points.coordinates[activeIndex]?.[1])}</dd>
-            {Object.entries(points.metadata).slice(0, 8).flatMap(([key, values]) => [
-              <dt key={`${key}-term`}>{key}</dt>,
-              <dd key={`${key}-value`}>{displayValue(values[activeIndex])}</dd>
-            ])}
-            {Object.entries(points.modalities).slice(0, 4).flatMap(([key, values]) => [
+            <dt>Embedding x</dt><dd>{displayValue(points.coordinates[activeIndex]?.[0])}</dd>
+            <dt>Embedding y</dt><dd>{displayValue(points.coordinates[activeIndex]?.[1])}</dd>
+            {Object.entries(points.metadata).slice(0, 10).flatMap(([key, values]) => [
               <dt key={`${key}-term`}>{key}</dt>,
               <dd key={`${key}-value`}>{displayValue(values[activeIndex])}</dd>
             ])}
           </dl>
         )}
-        {origin && <div className="draft-origin">Draft origin <code>{origin}</code></div>}
+        {origin && <div className="draft-origin">Membership source <code>{origin}</code></div>}
       </section>
     </aside>
   );

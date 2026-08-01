@@ -24,13 +24,29 @@ from .models import (
     AnnotationPoints,
     AnnotationSummary,
     ExportResponse,
+    ExternalClusteringImport,
     FeatureDescriptor,
+    FeatureValues,
     FeaturesPayload,
+    ClusteringImport,
+    ClusteringResult,
+    DeletionConfirm,
+    DeletionImpact,
+    DeletionRequest,
+    LabelImpact,
+    LabelMutation,
+    LabelState,
+    LocalAnalysisCreate,
+    MarkerProgramCreate,
+    MarkerProgramResult,
     LabelDescriptor,
     MembershipDraftPut,
     MembershipPayload,
     NamedInput,
     RestartResponse,
+    SelectionCreate,
+    WorkspaceDocument,
+    ZoomCreate,
 )
 from .project import EyckProject, ProjectError, RevisionConflict
 
@@ -87,6 +103,10 @@ def _project_or_404(projects: dict[str, EyckProject], project_id: str) -> EyckPr
         return projects[project_id]
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project not found") from exc
+
+
+def _if_match(value: str) -> str:
+    return value.removeprefix("W/").strip('"')
 
 
 def create_app(
@@ -158,6 +178,7 @@ def create_app(
         project = _project_or_404(projects, project_id)
         base = f"{public_api_root}/{project_id}"
         first_embedding = project.spec.embeddings[0]
+        labels = project.current_labels()
         return AnnotationDetail(
             project_id=project.spec.id,
             title=project.spec.title,
@@ -175,7 +196,7 @@ def create_app(
                     description=label.description,
                     ontology_ids=label.ontology_ids,
                 )
-                for label in project.spec.labels.labels
+                for label in labels.labels
             ],
             metadata_columns=list(project.spec.metadata_columns),
             embeddings=[NamedInput(id=item.id, obsm=item.obsm, dimensions=project.input_dimensions[item.id]) for item in project.spec.embeddings],
@@ -186,6 +207,8 @@ def create_app(
             features_url=f"{base}/features",
             memberships_url=f"{base}/memberships",
             export_url=f"{base}/export",
+            workspace_url=f"{base}/workspace",
+            labels_url=f"{base}/labels",
             csrf_token=csrf_token,
             restart_available=restart_callback is not None,
         )
@@ -208,9 +231,15 @@ def create_app(
             ]
         )
 
-    @app.get(f"{api_root}/{{project_id}}/features/{{feature_index}}/values")
-    def feature_values(project_id: str, feature_index: int) -> dict[str, list[float | None]]:
-        return {"values": _project_or_404(projects, project_id).feature_values_by_index(feature_index)}
+    @app.get(
+        f"{api_root}/{{project_id}}/features/{{feature_index}}/values",
+        response_model=FeatureValues,
+    )
+    def feature_values(project_id: str, feature_index: int) -> FeatureValues:
+        project = _project_or_404(projects, project_id)
+        if feature_index < 0 or feature_index >= project.n_vars:
+            raise ProjectError(f"unknown feature index: {feature_index}")
+        return project.feature_values(project.feature_ids[feature_index])
 
     @app.get(f"{api_root}/{{project_id}}/memberships", response_model=MembershipPayload)
     def memberships(project_id: str) -> MembershipPayload:
@@ -232,7 +261,7 @@ def create_app(
         unknown_support = set(body.support_observation_ids) - set(project.observation_ids)
         if unknown_support:
             raise ProjectError(f"unknown support observation IDs: {sorted(unknown_support)}")
-        document = project.put_memberships(if_match.removeprefix("W/").strip('"'), body.rows)
+        document = project.put_memberships(_if_match(if_match), body.rows)
         return MembershipPayload(
             revision=document.revision,
             origin=document.source,
@@ -243,7 +272,7 @@ def create_app(
     @app.post(f"{api_root}/{{project_id}}/export", response_model=ExportResponse)
     def export(project_id: str, if_match: str = Header(..., alias="If-Match")) -> ExportResponse:
         result = _project_or_404(projects, project_id).export(
-            if_match.removeprefix("W/").strip('"')
+            _if_match(if_match)
         )
         return result.model_copy(
             update={"report_url": f"{public_api_root}/{project_id}/export/report"}
@@ -252,6 +281,129 @@ def create_app(
     @app.get(f"{api_root}/{{project_id}}/export/report")
     def export_report(project_id: str) -> dict[str, Any]:
         return _project_or_404(projects, project_id).export_report()
+
+    @app.get(f"{api_root}/{{project_id}}/workspace", response_model=WorkspaceDocument)
+    def workspace(project_id: str) -> WorkspaceDocument:
+        return _project_or_404(projects, project_id).current_workspace()
+
+    @app.post(f"{api_root}/{{project_id}}/workspace/selections", response_model=WorkspaceDocument)
+    def create_selection(
+        project_id: str,
+        body: SelectionCreate,
+        if_match: str = Header(..., alias="If-Match"),
+    ) -> WorkspaceDocument:
+        return _project_or_404(projects, project_id).create_selection(_if_match(if_match), body)
+
+    @app.post(f"{api_root}/{{project_id}}/workspace/zooms", response_model=WorkspaceDocument)
+    def create_zoom(
+        project_id: str,
+        body: ZoomCreate,
+        if_match: str = Header(..., alias="If-Match"),
+    ) -> WorkspaceDocument:
+        return _project_or_404(projects, project_id).create_zoom(_if_match(if_match), body)
+
+    @app.post(
+        f"{api_root}/{{project_id}}/workspace/clusterings/import",
+        response_model=WorkspaceDocument,
+    )
+    def import_clustering(
+        project_id: str,
+        body: ClusteringImport,
+        if_match: str = Header(..., alias="If-Match"),
+    ) -> WorkspaceDocument:
+        return _project_or_404(projects, project_id).import_clustering(_if_match(if_match), body)
+
+    @app.post(
+        f"{api_root}/{{project_id}}/workspace/clusterings/external",
+        response_model=WorkspaceDocument,
+    )
+    def import_external_clustering(
+        project_id: str,
+        body: ExternalClusteringImport,
+        if_match: str = Header(..., alias="If-Match"),
+    ) -> WorkspaceDocument:
+        return _project_or_404(projects, project_id).import_external_clustering(
+            _if_match(if_match), body
+        )
+
+    @app.post(
+        f"{api_root}/{{project_id}}/workspace/analyses/local",
+        response_model=WorkspaceDocument,
+    )
+    def compute_local_analysis(
+        project_id: str,
+        body: LocalAnalysisCreate,
+        if_match: str = Header(..., alias="If-Match"),
+    ) -> WorkspaceDocument:
+        return _project_or_404(projects, project_id).compute_local_analysis(_if_match(if_match), body)
+
+    @app.post(
+        f"{api_root}/{{project_id}}/workspace/marker-programs",
+        response_model=MarkerProgramResult,
+    )
+    def create_marker_program(
+        project_id: str,
+        body: MarkerProgramCreate,
+        if_match: str = Header(..., alias="If-Match"),
+    ) -> MarkerProgramResult:
+        return _project_or_404(projects, project_id).create_marker_program(_if_match(if_match), body)
+
+    @app.get(
+        f"{api_root}/{{project_id}}/workspace/marker-programs/{{program_id}}/result",
+        response_model=MarkerProgramResult,
+    )
+    def marker_program_result(project_id: str, program_id: str) -> MarkerProgramResult:
+        return _project_or_404(projects, project_id).marker_program_result(program_id)
+
+    @app.get(
+        f"{api_root}/{{project_id}}/workspace/clusterings/{{clustering_id}}/result",
+        response_model=ClusteringResult,
+    )
+    def clustering_result(project_id: str, clustering_id: str) -> ClusteringResult:
+        return _project_or_404(projects, project_id).clustering_result(clustering_id)
+
+    @app.get(
+        f"{api_root}/{{project_id}}/workspace/zooms/{{zoom_id}}/points",
+        response_model=AnnotationPoints,
+    )
+    def zoom_points(project_id: str, zoom_id: str, embedding: str = Query(...)) -> AnnotationPoints:
+        return _project_or_404(projects, project_id).workspace_points(zoom_id, embedding)
+
+    @app.post(
+        f"{api_root}/{{project_id}}/workspace/deletions/preview",
+        response_model=DeletionImpact,
+    )
+    def deletion_preview(project_id: str, body: DeletionRequest) -> DeletionImpact:
+        return _project_or_404(projects, project_id).deletion_impact(body)
+
+    @app.post(
+        f"{api_root}/{{project_id}}/workspace/deletions",
+        response_model=WorkspaceDocument,
+    )
+    def delete_workspace_objects(
+        project_id: str,
+        body: DeletionConfirm,
+        if_match: str = Header(..., alias="If-Match"),
+    ) -> WorkspaceDocument:
+        return _project_or_404(projects, project_id).delete_workspace_objects(
+            _if_match(if_match), body
+        )
+
+    @app.get(f"{api_root}/{{project_id}}/labels", response_model=LabelState)
+    def labels(project_id: str) -> LabelState:
+        return _project_or_404(projects, project_id).current_label_state()
+
+    @app.post(f"{api_root}/{{project_id}}/labels/impact", response_model=LabelImpact)
+    def label_impact(project_id: str, body: LabelMutation) -> LabelImpact:
+        return _project_or_404(projects, project_id).label_impact(body)
+
+    @app.put(f"{api_root}/{{project_id}}/labels", response_model=LabelState)
+    def put_labels(
+        project_id: str,
+        body: LabelMutation,
+        if_match: str = Header(..., alias="If-Match"),
+    ) -> LabelState:
+        return _project_or_404(projects, project_id).put_labels(_if_match(if_match), body)
 
     @app.post("/api/v1/restart", response_model=RestartResponse)
     async def restart() -> RestartResponse:

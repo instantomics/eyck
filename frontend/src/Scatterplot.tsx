@@ -28,8 +28,9 @@ export interface ScatterplotProps {
   coordinates: [number, number][];
   colors: Float32Array;
   selectedIndices: Set<number>;
+  focusedIndices: Set<number>;
   onSingleSelect: (index: number) => void;
-  onLasso: (indices: number[], mode: SelectionMode) => void;
+  onLasso: (indices: number[], mode: SelectionMode, polygon: [number, number][]) => void;
   onClearSelection: () => void;
 }
 
@@ -54,6 +55,7 @@ export function Scatterplot({
   coordinates,
   colors,
   selectedIndices,
+  focusedIndices,
   onSingleSelect,
   onLasso,
   onClearSelection
@@ -62,6 +64,7 @@ export function Scatterplot({
   const renderRef = useRef<(() => void) | null>(null);
   const colorBufferRef = useRef<Buffer | null>(null);
   const selectionBufferRef = useRef<{ subdata(data: Float32Array): void } | null>(null);
+  const focusBufferRef = useRef<{ subdata(data: Float32Array): void } | null>(null);
   const gestureRef = useRef<Gesture | null>(null);
   const [dimensions, setDimensions] = useState({ width: 1, height: 1 });
   const [view, setView] = useState<ViewState>({ scale: 1, translate: [0, 0] });
@@ -89,6 +92,24 @@ export function Scatterplot({
       ((y - centerY) / range) * 1.82
     ] as [number, number]);
   }, [coordinates]);
+  const coordinateBounds = useMemo(() => {
+    if (coordinates.length === 0) return { centerX: 0, centerY: 0, range: 1 };
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    coordinates.forEach(([x, y]) => {
+      minX = Math.min(minX, x);
+      maxX = Math.max(maxX, x);
+      minY = Math.min(minY, y);
+      maxY = Math.max(maxY, y);
+    });
+    return {
+      centerX: (minX + maxX) / 2,
+      centerY: (minY + maxY) / 2,
+      range: Math.max(maxX - minX, maxY - minY) || 1
+    };
+  }, [coordinates]);
 
   const safeColors = useMemo(() => {
     if (colors.length === normalized.length * 4) return colors;
@@ -114,11 +135,14 @@ export function Scatterplot({
     }
     const positions = new Float32Array(normalized.flat());
     const selection = new Float32Array(normalized.length);
+    const focus = new Float32Array(normalized.length);
     const positionBuffer = regl.buffer(positions);
     const colorBuffer = regl.buffer({ data: safeColors, usage: "dynamic" });
     const selectionBuffer = regl.buffer(selection);
+    const focusBuffer = regl.buffer(focus);
     colorBufferRef.current = colorBuffer;
     selectionBufferRef.current = selectionBuffer;
+    focusBufferRef.current = focusBuffer;
 
     interface DrawProps {
       scale: number;
@@ -132,21 +156,25 @@ export function Scatterplot({
         attribute vec2 position;
         attribute vec4 pointColor;
         attribute float selected;
+        attribute float focused;
         uniform float scale;
         uniform vec2 translate;
         varying vec4 color;
         varying float isSelected;
+        varying float isFocused;
         void main() {
           gl_Position = vec4(position * scale + translate, 0.0, 1.0);
-          gl_PointSize = selected > 0.5 ? 9.0 : 4.0;
+          gl_PointSize = selected > 0.5 ? 10.0 : (focused > 0.5 ? 7.0 : 4.0);
           color = pointColor;
           isSelected = selected;
+          isFocused = focused;
         }
       `,
       frag: `
         precision mediump float;
         varying vec4 color;
         varying float isSelected;
+        varying float isFocused;
         uniform float onlySelected;
         void main() {
           float radius = distance(gl_PointCoord, vec2(0.5));
@@ -154,6 +182,8 @@ export function Scatterplot({
           if (onlySelected > 0.5 && isSelected < 0.5) discard;
           if (isSelected > 0.5 && radius > 0.34) {
             gl_FragColor = vec4(0.08, 0.10, 0.12, 1.0);
+          } else if (isFocused > 0.5 && radius > 0.39) {
+            gl_FragColor = vec4(1.0, 1.0, 1.0, 0.95);
           } else {
             gl_FragColor = color;
           }
@@ -162,7 +192,8 @@ export function Scatterplot({
       attributes: {
         position: positionBuffer,
         pointColor: colorBuffer,
-        selected: selectionBuffer
+        selected: selectionBuffer,
+        focused: focusBuffer
       },
       uniforms: {
         scale: regl.prop<DrawProps, "scale">("scale"),
@@ -207,6 +238,7 @@ export function Scatterplot({
       renderRef.current = null;
       colorBufferRef.current = null;
       selectionBufferRef.current = null;
+      focusBufferRef.current = null;
       regl.destroy();
     };
   }, [normalized]);
@@ -226,6 +258,15 @@ export function Scatterplot({
   }, [normalized.length, selectedIndices]);
 
   useEffect(() => {
+    const focus = new Float32Array(normalized.length);
+    focusedIndices.forEach((index) => {
+      if (index >= 0 && index < focus.length) focus[index] = 1;
+    });
+    focusBufferRef.current?.subdata(focus);
+    renderRef.current?.();
+  }, [focusedIndices, normalized.length]);
+
+  useEffect(() => {
     renderRef.current?.();
   }, [view]);
 
@@ -233,6 +274,17 @@ export function Scatterplot({
     x: ((normalized[index][0] * view.scale + view.translate[0] + 1) / 2) * dimensions.width,
     y: ((1 - normalized[index][1] * view.scale - view.translate[1]) / 2) * dimensions.height
   });
+
+  const unproject = (point: Point): [number, number] => {
+    const clipX = (point.x / dimensions.width) * 2 - 1;
+    const clipY = 1 - (point.y / dimensions.height) * 2;
+    const normalizedX = (clipX - view.translate[0]) / view.scale;
+    const normalizedY = (clipY - view.translate[1]) / view.scale;
+    return [
+      (normalizedX / 1.82) * coordinateBounds.range + coordinateBounds.centerX,
+      (normalizedY / 1.82) * coordinateBounds.range + coordinateBounds.centerY
+    ];
+  };
 
   const handlePointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
     const point = pointerPoint(event);
@@ -280,7 +332,7 @@ export function Scatterplot({
         const indices = normalized.flatMap((_coordinate, index) => (
           pointInPolygon(project(index), gesture.points) ? [index] : []
         ));
-        onLasso(indices, gesture.selectionMode);
+        onLasso(indices, gesture.selectionMode, gesture.points.map(unproject));
       }
       setLasso([]);
       return;
@@ -319,6 +371,14 @@ export function Scatterplot({
   };
 
   const resetView = () => setView({ scale: 1, translate: [0, 0] });
+  const zoomBy = (factor: number) => setView((current) => {
+    const scale = Math.max(0.35, Math.min(30, current.scale * factor));
+    const ratio = scale / current.scale;
+    return {
+      scale,
+      translate: [current.translate[0] * ratio, current.translate[1] * ratio]
+    };
+  });
 
   return (
     <div className={`scatter-shell ${lassoEnabled ? "lasso-mode" : ""}`}>
@@ -331,6 +391,8 @@ export function Scatterplot({
           Lasso
         </Button>
         <Button onClick={resetView}>Fit</Button>
+        <Button aria-label="Zoom in" title="Zoom in" onClick={() => zoomBy(1.35)}>+</Button>
+        <Button aria-label="Zoom out" title="Zoom out" onClick={() => zoomBy(1 / 1.35)}>-</Button>
         <Button disabled={selectedIndices.size === 0} onClick={onClearSelection}>Clear</Button>
         <span>Shift add / Alt subtract / Esc clear</span>
       </div>
@@ -356,9 +418,16 @@ export function Scatterplot({
             }}
             onWheel={handleWheel}
             onKeyDown={(event) => {
-              if (event.key !== "Escape") return;
-              event.preventDefault();
-              onClearSelection();
+              if (event.key === "Escape") {
+                event.preventDefault();
+                onClearSelection();
+              } else if (event.key === "+" || event.key === "=") {
+                event.preventDefault();
+                zoomBy(1.35);
+              } else if (event.key === "-") {
+                event.preventDefault();
+                zoomBy(1 / 1.35);
+              }
             }}
           />
         )}

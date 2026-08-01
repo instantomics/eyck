@@ -1,29 +1,28 @@
 import { useDeferredValue, useEffect, useMemo, useState } from "react";
 import { getFeatureValues, searchFeatures } from "./api";
 import type {
-  Descriptor,
   FeatureDescriptor,
+  NamedInput,
   PointsPayload,
   Scalar
 } from "./types";
-import { descriptorKey, descriptorName } from "./types";
 import { Field, Loading, Select } from "./ui";
 
 type ColorMode = "metadata" | "gene" | "modality";
 
 interface ColoringControlsProps {
-  metadataColumns: Descriptor[];
-  modalities: Descriptor[];
+  metadataColumns: string[];
+  modalities: NamedInput[];
   points: PointsPayload;
   featuresUrl: string;
   onColor: (title: string, values: Scalar[] | undefined) => void;
 }
 
 function availableDescriptors(
-  descriptors: Descriptor[],
+  descriptors: string[],
   values: Record<string, Scalar[]>
-): Descriptor[] {
-  const declared = descriptors.filter((descriptor) => descriptorKey(descriptor) in values);
+): string[] {
+  const declared = descriptors.filter((descriptor) => descriptor in values);
   if (declared.length > 0) return declared;
   return Object.keys(values);
 }
@@ -40,15 +39,15 @@ export function ColoringControls({
     [metadataColumns, points.metadata]
   );
   const modalityOptions = useMemo(
-    () => availableDescriptors(modalities, points.modalities),
+    () => availableDescriptors(modalities.map((item) => item.id), points.modalities),
     [modalities, points.modalities]
   );
   const initialMode: ColorMode = metadata.length > 0
     ? "metadata"
     : modalityOptions.length > 0 ? "modality" : "gene";
   const [mode, setMode] = useState<ColorMode>(initialMode);
-  const [metadataKey, setMetadataKey] = useState(descriptorKey(metadata[0] ?? ""));
-  const [modalityKey, setModalityKey] = useState(descriptorKey(modalityOptions[0] ?? ""));
+  const [metadataKey, setMetadataKey] = useState(metadata[0] ?? "");
+  const [modalityKey, setModalityKey] = useState(modalityOptions[0] ?? "");
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
   const [features, setFeatures] = useState<FeatureDescriptor[]>([]);
@@ -59,11 +58,9 @@ export function ColoringControls({
 
   useEffect(() => {
     if (mode === "metadata" && metadataKey) {
-      const descriptor = metadata.find((item) => descriptorKey(item) === metadataKey);
-      onColor(`Metadata / ${descriptor ? descriptorName(descriptor) : metadataKey}`, points.metadata[metadataKey]);
+      onColor(`Metadata / ${metadataKey}`, points.metadata[metadataKey]);
     } else if (mode === "modality" && modalityKey) {
-      const descriptor = modalityOptions.find((item) => descriptorKey(item) === modalityKey);
-      onColor(`Modality / ${descriptor ? descriptorName(descriptor) : modalityKey}`, points.modalities[modalityKey]);
+      onColor(`Modality / ${modalityKey}`, points.modalities[modalityKey]);
     } else if (mode === "gene") {
       onColor(
         selectedFeature ? `Gene / ${selectedFeature.feature_symbol ?? selectedFeature.feature_id}` : "Gene expression",
@@ -101,8 +98,22 @@ export function ColoringControls({
     setSearching(true);
     setGeneError("");
     try {
-      const values = await getFeatureValues(featuresUrl, feature.feature_index);
-      setGeneValues(values);
+      const payload = await getFeatureValues(featuresUrl, feature.feature_index);
+      if (payload.observation_ids.length !== payload.values.length) {
+        throw new Error("Feature values do not match their observation index");
+      }
+      if (new Set(payload.observation_ids).size !== payload.observation_ids.length) {
+        throw new Error("Feature values contain duplicate observation IDs");
+      }
+      if (payload.feature_id !== feature.feature_id) {
+        throw new Error(`Feature response mismatch: expected ${feature.feature_id}, received ${payload.feature_id}`);
+      }
+      const valuesById = new Map(payload.observation_ids.map((id, index) => [id, payload.values[index]]));
+      const missing = points.observation_ids.filter((id) => !valuesById.has(id));
+      if (missing.length > 0) {
+        throw new Error(`Feature values are missing ${missing.length} observations in this zoom`);
+      }
+      setGeneValues(points.observation_ids.map((id) => valuesById.get(id) ?? null));
     } catch (error) {
       setGeneError(error instanceof Error ? error.message : "Could not load expression values");
     } finally {
@@ -123,8 +134,8 @@ export function ColoringControls({
         <Field label="Column">
           <Select value={metadataKey} onChange={(event) => setMetadataKey(event.target.value)}>
             {metadata.map((descriptor) => (
-              <option key={descriptorKey(descriptor)} value={descriptorKey(descriptor)}>
-                {descriptorName(descriptor)}
+              <option key={descriptor} value={descriptor}>
+                {descriptor}
               </option>
             ))}
           </Select>
@@ -134,8 +145,8 @@ export function ColoringControls({
         <Field label="Modality">
           <Select value={modalityKey} onChange={(event) => setModalityKey(event.target.value)}>
             {modalityOptions.map((descriptor) => (
-              <option key={descriptorKey(descriptor)} value={descriptorKey(descriptor)}>
-                {descriptorName(descriptor)}
+              <option key={descriptor} value={descriptor}>
+                {descriptor}
               </option>
             ))}
           </Select>

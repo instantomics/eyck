@@ -17,11 +17,11 @@ function asDraft(payload: MembershipPayload): MembershipDraft {
 }
 
 function rowKey(row: MembershipRow): string {
-  return `${row.observation_id}\u0000${row.entity_id}\u0000${row.label_id}`;
+  return `${row.support_id}\u0000${row.observation_id}\u0000${row.entity_id}\u0000${row.label_id}`;
 }
 
 function rowSignature(row: MembershipRow | undefined): string {
-  return row ? `${rowKey(row)}\u0000${row.state}` : "";
+  return row ? JSON.stringify(row) : "";
 }
 
 function sortRows(rows: MembershipRow[]): MembershipRow[] {
@@ -35,6 +35,7 @@ export function useMembershipDraft(url: string, csrfToken: string) {
   const [origin, setOrigin] = useState("");
   const [status, setStatus] = useState<SaveStatus>("loading");
   const [message, setMessage] = useState("");
+  const [hasLocalChanges, setHasLocalChanges] = useState(false);
   const editVersion = useRef(0);
   const saveInFlight = useRef(false);
 
@@ -46,6 +47,7 @@ export function useMembershipDraft(url: string, csrfToken: string) {
     setOrigin(payload.origin);
     setStatus("saved");
     setMessage("");
+    setHasLocalChanges(false);
     editVersion.current += 1;
   }, []);
 
@@ -68,13 +70,18 @@ export function useMembershipDraft(url: string, csrfToken: string) {
     setStatus("saving");
     setMessage("");
     try {
-      const nextRevision = await putMemberships(url, revision, csrfToken, snapshot);
-      setRevision(nextRevision);
+      const payload = await putMemberships(url, revision, csrfToken, snapshot);
+      setRevision(payload.revision);
       setBase(snapshot);
       if (editVersion.current === version) {
+        setDraft(asDraft(payload));
+        setBase(asDraft(payload));
+        setOrigin(payload.origin);
         setStatus("saved");
+        setHasLocalChanges(false);
       } else {
         setStatus("dirty");
+        setHasLocalChanges(true);
       }
     } catch (error) {
       if (error instanceof ApiError && (error.status === 409 || error.status === 412)) {
@@ -99,7 +106,8 @@ export function useMembershipDraft(url: string, csrfToken: string) {
     observationIds: string[],
     entityId: string,
     labelId: string,
-    state: MembershipState
+    state: MembershipState,
+    context: { selectionId: string; zoomId: string }
   ) => {
     if (observationIds.length === 0) return;
     setDraft((current) => {
@@ -107,14 +115,20 @@ export function useMembershipDraft(url: string, csrfToken: string) {
       const targetIds = new Set(observationIds);
       const remaining = current.rows.filter((row) => !(
         targetIds.has(row.observation_id)
+        && row.support_id === context.selectionId
         && row.entity_id === entityId
         && row.label_id === labelId
       ));
       const additions = observationIds.map((observationId) => ({
+        support_id: context.selectionId,
         observation_id: observationId,
         entity_id: entityId,
         label_id: labelId,
-        state
+        state,
+        decision_view_id: context.zoomId,
+        provenance: "explicit",
+        selection_id: context.selectionId,
+        zoom_id: context.zoomId
       }));
       return {
         rows: sortRows([...remaining, ...additions]),
@@ -125,19 +139,36 @@ export function useMembershipDraft(url: string, csrfToken: string) {
       };
     });
     editVersion.current += 1;
+    setHasLocalChanges(true);
     setStatus("dirty");
     setMessage("");
   }, []);
 
-  const discardLocal = useCallback(async () => {
+  const loadLatest = useCallback(async () => {
     setStatus("loading");
     try {
       installPayload(await getMemberships(url));
     } catch (error) {
       setStatus("error");
       setMessage(error instanceof Error ? error.message : "Could not reload the server draft");
+      throw error;
     }
   }, [installPayload, url]);
+
+  const reload = useCallback(async () => {
+    if (status !== "saved" || hasLocalChanges) {
+      throw new Error(`Membership reload is blocked while local state is ${status}`);
+    }
+    await loadLatest();
+  }, [hasLocalChanges, loadLatest, status]);
+
+  const discardLocal = useCallback(async () => {
+    try {
+      await loadLatest();
+    } catch {
+      // loadLatest already exposes the failure through hook status and message.
+    }
+  }, [loadLatest]);
 
   const mergeLatest = useCallback(async () => {
     if (!draft || !base) return;
@@ -173,6 +204,7 @@ export function useMembershipDraft(url: string, csrfToken: string) {
       setRevision(latest.revision);
       setOrigin(latest.origin);
       editVersion.current += 1;
+      setHasLocalChanges(true);
       setStatus("dirty");
       setMessage("Local edits were merged onto the latest server draft.");
     } catch (error) {
@@ -183,8 +215,8 @@ export function useMembershipDraft(url: string, csrfToken: string) {
 
   const retry = useCallback(() => {
     if (draft) setStatus("dirty");
-    else void discardLocal();
-  }, [discardLocal, draft]);
+    else void loadLatest().catch(() => undefined);
+  }, [draft, loadLatest]);
 
   return {
     draft,
@@ -192,7 +224,10 @@ export function useMembershipDraft(url: string, csrfToken: string) {
     origin,
     status,
     message,
+    hasLocalChanges,
     applyState,
+    reload,
+    reloadAfterCommit: loadLatest,
     discardLocal,
     mergeLatest,
     retry

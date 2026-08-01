@@ -128,6 +128,11 @@ def load_labels(path: Path) -> LabelDocument:
     except (OSError, json.JSONDecodeError, ValidationError) as exc:
         raise DiscoveryError(f"invalid labels document {path}: {exc}") from exc
 
+    return validate_label_document(document)
+
+
+def validate_label_document(document: LabelDocument) -> LabelDocument:
+    """Validate label identities and DAG structure independent of storage."""
     by_id = {}
     for label in document.labels:
         validate_safe_id(label.id, "label")

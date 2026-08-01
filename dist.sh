@@ -1,7 +1,7 @@
 # uv add setuptools_git_versioning gh twine build
 python -m setuptools_git_versioning
 
-version="0.0.19"
+version="0.1.0"
 
 git add .
 git commit -m "version v${version}"

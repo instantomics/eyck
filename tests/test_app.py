@@ -50,6 +50,8 @@ def test_typed_index_detail_points_and_features(client: TestClient):
     hits = client.get(detail["features_url"], params={"q": "gene"}).json()
     assert [hit["feature_id"] for hit in hits["features"]] == ["GeneA", "GeneB"]
     values = client.get(f'{detail["features_url"]}/1/values').json()
+    assert values["feature_id"] == "GeneB"
+    assert values["observation_ids"] == ["d1", "d2", "d3"]
     assert values["values"] == [0.0, 2.0, 1.0]
 
 
