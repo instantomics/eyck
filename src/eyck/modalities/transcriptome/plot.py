@@ -6,9 +6,14 @@ from .data import Transcriptome
 import scanpy as sc
 import numpy as np
 from typing import List
-import datashader as ds
-from datashader.mpl_ext import dsshow
 from types import SimpleNamespace
+
+try:
+    import datashader as ds
+    from datashader.mpl_ext import dsshow
+except ModuleNotFoundError:
+    ds = None
+    dsshow = None
 
 
 def get_colors(n):
@@ -470,10 +475,11 @@ def plot_embedding(
         scale = 20
 
         # check if datashader
-        if (len(plotdata_active) < 10000) or (datashader is False):
-            do_datashader = False
-        else:
-            do_datashader = True
+        if datashader is True and ds is None:
+            raise ModuleNotFoundError("datashader=True requires the optional datashader package")
+        do_datashader = (
+            ds is not None and len(plotdata_active) >= 10000 and datashader is not False
+        )
 
         # actual plotting depending on version
         if version == "category":
