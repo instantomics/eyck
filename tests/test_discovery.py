@@ -4,10 +4,9 @@ import json
 from pathlib import Path
 
 import pytest
-
-from eyck.discovery import DiscoveryError, discover_projects, load_labels
-
 from conftest import LABELS, write_project
+from eyck.discovery import DiscoveryError, discover_projects, load_labels
+from eyck.project import EyckProject
 
 
 def test_recursive_discovery_resolves_confined_real_paths(project_root: Path):
@@ -20,6 +19,30 @@ def test_recursive_discovery_resolves_confined_real_paths(project_root: Path):
     assert [item.id for item in project.embeddings] == ["umap"]
 
 
+def test_output_uri_remains_runtime_confined(tmp_path: Path, monkeypatch) -> None:
+    manifest = write_project(tmp_path)
+    source_output = manifest.parent / "output/annotation_projects/cells"
+    output_root = tmp_path / "managed-output"
+    managed_output = output_root / "sources/test-source/annotation_projects/cells"
+    managed_output.parent.mkdir(parents=True)
+    source_output.rename(managed_output)
+    text = manifest.read_text(encoding="utf-8")
+    text = text.replace(
+        'output = "output/annotation_projects/cells"',
+        'output = "output://sources/test-source/annotation_projects/cells"',
+    ).replace(
+        'initial_memberships = "output/annotation_projects/cells/generated_initial.parquet"',
+        'initial_memberships = "output://sources/test-source/annotation_projects/cells/generated_initial.parquet"',
+    )
+    manifest.write_text(text, encoding="utf-8")
+    monkeypatch.setenv("IOMIX_OUTPUT_ROOT", str(output_root))
+
+    spec = discover_projects([tmp_path])["cells"]
+    project = EyckProject(spec)
+    with project.writer_lock():
+        assert project.spec.output_path == managed_output
+
+
 def test_discovery_rejects_unknown_fields_and_escaping_paths(tmp_path: Path):
     manifest = write_project(tmp_path)
     original = manifest.read_text(encoding="utf-8")
@@ -27,7 +50,12 @@ def test_discovery_rejects_unknown_fields_and_escaping_paths(tmp_path: Path):
     with pytest.raises(DiscoveryError, match="unknown project fields"):
         discover_projects([tmp_path])
 
-    manifest.write_text(original.replace('h5ad = "data/cells.h5ad"', 'h5ad = "../../../../outside.h5ad"'), encoding="utf-8")
+    manifest.write_text(
+        original.replace(
+            'h5ad = "data/cells.h5ad"', 'h5ad = "../../../../outside.h5ad"'
+        ),
+        encoding="utf-8",
+    )
     with pytest.raises(DiscoveryError, match="escapes source project"):
         discover_projects([tmp_path])
 
@@ -54,8 +82,17 @@ def test_discovery_rejects_duplicate_project_ids(tmp_path: Path):
 @pytest.mark.parametrize(
     ("labels", "message"),
     [
-        ({"schema_version": 1, "labels": [{"id": "../bad", "name": "bad"}]}, "unsafe label ID"),
-        ({"schema_version": 1, "labels": [{"id": "a", "name": "a", "parent_ids": ["missing"]}]}, "missing parents"),
+        (
+            {"schema_version": 1, "labels": [{"id": "../bad", "name": "bad"}]},
+            "unsafe label ID",
+        ),
+        (
+            {
+                "schema_version": 1,
+                "labels": [{"id": "a", "name": "a", "parent_ids": ["missing"]}],
+            },
+            "missing parents",
+        ),
         (
             {
                 "schema_version": 1,
@@ -68,7 +105,9 @@ def test_discovery_rejects_duplicate_project_ids(tmp_path: Path):
         ),
     ],
 )
-def test_label_dag_rejects_unsafe_missing_and_cyclic(labels: dict, message: str, tmp_path: Path):
+def test_label_dag_rejects_unsafe_missing_and_cyclic(
+    labels: dict, message: str, tmp_path: Path
+):
     path = tmp_path / "labels.json"
     path.write_text(json.dumps(labels), encoding="utf-8")
     with pytest.raises(DiscoveryError, match=message):

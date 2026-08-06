@@ -32,23 +32,23 @@ from .discovery import (
 )
 from .models import (
     AnnotationPoints,
-    DecisionRow,
-    ExportResponse,
-    FeatureHit,
-    FeatureSearch,
-    FeatureValues,
-    HierarchySummary,
-    IdentitySet,
     BooleanSelectionDefinition,
     ClusteringDescriptor,
     ClusteringImport,
     ClusteringResult,
     ClusterSelectionDefinition,
+    DecisionRow,
     DeletionConfirm,
     DeletionImpact,
     DeletionRequest,
     EmbeddingDescriptor,
+    ExportResponse,
     ExternalClusteringImport,
+    FeatureHit,
+    FeatureSearch,
+    FeatureValues,
+    HierarchySummary,
+    IdentitySet,
     LabelDocument,
     LabelImpact,
     LabelMutation,
@@ -61,11 +61,11 @@ from .models import (
     MarkerProgramResult,
     MembershipDocument,
     NamedInput,
+    ObservationSetDefinition,
     PointPayload,
     ProjectDetail,
     ProjectSummary,
     ProjectUrls,
-    ObservationSetDefinition,
     SavedSelection,
     SelectionCreate,
     WorkspaceDocument,
@@ -186,19 +186,31 @@ class EyckProject:
 
     def _assert_output_confined(self) -> None:
         resolved = self.spec.output_path.resolve(strict=False)
-        if resolved == self.spec.source_root or self.spec.source_root not in resolved.parents:
-            raise ProjectError("project output path no longer resolves within the source project")
+        if (
+            resolved == self.spec.output_root
+            or self.spec.output_root not in resolved.parents
+        ):
+            raise ProjectError(
+                "project output path no longer resolves within the source project"
+            )
 
     def _assert_generated_path(self, path: Path) -> None:
         output = self.spec.output_path.resolve(strict=False)
         resolved = path.resolve(strict=False)
         if resolved != output and output not in resolved.parents:
-            raise ProjectError(f"generated path no longer resolves within project output: {path}")
+            raise ProjectError(
+                f"generated path no longer resolves within project output: {path}"
+            )
 
     def _assert_labels_confined(self) -> None:
         resolved = self.spec.labels_path.resolve(strict=False)
-        if resolved == self.spec.source_root or self.spec.source_root not in resolved.parents:
-            raise ProjectError("labels path no longer resolves within the source project")
+        if (
+            resolved == self.spec.labels_root
+            or self.spec.labels_root not in resolved.parents
+        ):
+            raise ProjectError(
+                "labels path no longer resolves within the source project"
+            )
 
     def _transaction_targets(self) -> dict[str, Path]:
         return {
@@ -262,31 +274,49 @@ class EyckProject:
 
     def _validate_and_identify(self) -> None:
         source_hash = _file_sha256(self.spec.h5ad_path)
-        if self.spec.source_digest and source_hash != self.spec.source_digest.removeprefix("sha256:"):
+        if (
+            self.spec.source_digest
+            and source_hash != self.spec.source_digest.removeprefix("sha256:")
+        ):
             raise DiscoveryError(f"source digest mismatch for project {self.spec.id}")
         with self._adata() as data:
             observations = data.obs_names.astype(str).tolist()
             features = data.var_names.astype(str).tolist()
             if len(observations) != len(set(observations)):
-                raise DiscoveryError(f"project {self.spec.id} observation IDs are not unique")
+                raise DiscoveryError(
+                    f"project {self.spec.id} observation IDs are not unique"
+                )
             if len(features) != len(set(features)):
-                raise DiscoveryError(f"project {self.spec.id} feature IDs are not unique")
+                raise DiscoveryError(
+                    f"project {self.spec.id} feature IDs are not unique"
+                )
             missing_metadata = set(self.spec.metadata_columns) - set(data.obs.columns)
             if missing_metadata:
-                raise DiscoveryError(f"missing metadata columns: {sorted(missing_metadata)}")
-            if self.spec.expression_layer != "X" and self.spec.expression_layer not in data.layers:
-                raise DiscoveryError(f"missing expression layer: {self.spec.expression_layer}")
+                raise DiscoveryError(
+                    f"missing metadata columns: {sorted(missing_metadata)}"
+                )
+            if (
+                self.spec.expression_layer != "X"
+                and self.spec.expression_layer not in data.layers
+            ):
+                raise DiscoveryError(
+                    f"missing expression layer: {self.spec.expression_layer}"
+                )
             dimensions: dict[str, int] = {}
             for item in self.spec.embeddings + self.spec.modalities:
                 if item.obsm not in data.obsm:
                     raise DiscoveryError(f"missing obsm input: {item.obsm}")
                 shape = data.obsm[item.obsm].shape
                 if len(shape) != 2 or shape[0] != data.n_obs:
-                    raise DiscoveryError(f"invalid obsm input shape for {item.obsm}: {shape}")
+                    raise DiscoveryError(
+                        f"invalid obsm input shape for {item.obsm}: {shape}"
+                    )
                 dimensions[item.id] = int(shape[1])
             for embedding in self.spec.embeddings:
                 if dimensions[embedding.id] < 2:
-                    raise DiscoveryError(f"embedding {embedding.id} needs at least two dimensions")
+                    raise DiscoveryError(
+                        f"embedding {embedding.id} needs at least two dimensions"
+                    )
             self.observation_ids = observations
             self.feature_ids = features
             self.feature_symbols = (
@@ -332,7 +362,9 @@ class EyckProject:
                 elif source.startswith("layer:"):
                     layer = source.removeprefix("layer:")
                     if layer not in data.layers:
-                        raise ProjectError(f"H5AD expression layer is unavailable: {layer}")
+                        raise ProjectError(
+                            f"H5AD expression layer is unavailable: {layer}"
+                        )
                     backed_matrix = data.layers[layer]
                     var = data.var.copy()
                 else:
@@ -416,8 +448,14 @@ class EyckProject:
             feature_count=self.n_vars,
             expression_layer=self.spec.expression_layer,
             metadata_columns=list(self.spec.metadata_columns),
-            embeddings=[NamedInput(id=x.id, obsm=x.obsm, dimensions=self.input_dimensions[x.id]) for x in self.spec.embeddings],
-            modalities=[NamedInput(id=x.id, obsm=x.obsm, dimensions=self.input_dimensions[x.id]) for x in self.spec.modalities],
+            embeddings=[
+                NamedInput(id=x.id, obsm=x.obsm, dimensions=self.input_dimensions[x.id])
+                for x in self.spec.embeddings
+            ],
+            modalities=[
+                NamedInput(id=x.id, obsm=x.obsm, dimensions=self.input_dimensions[x.id])
+                for x in self.spec.modalities
+            ],
             labels=self.current_labels(),
             identities=self.identities,
             csrf_token=csrf_token,
@@ -463,7 +501,9 @@ class EyckProject:
             for modality in self.spec.modalities:
                 values = np.asarray(data.obsm[modality.obsm])
                 if values.shape[1] == 1:
-                    modalities[modality.id] = [_json_scalar(value) for value in values[:, 0]]
+                    modalities[modality.id] = [
+                        _json_scalar(value) for value in values[:, 0]
+                    ]
                 else:
                     for dimension in range(values.shape[1]):
                         modalities[f"{modality.id}:{dimension}"] = [
@@ -505,8 +545,13 @@ class EyckProject:
             values = selected.toarray().reshape(-1)
         else:
             values = np.asarray(selected).reshape(-1)
-        result = [None if not math.isfinite(float(value)) else float(value) for value in values]
-        return FeatureValues(feature_id=feature_id, observation_ids=self.observation_ids, values=result)
+        result = [
+            None if not math.isfinite(float(value)) else float(value)
+            for value in values
+        ]
+        return FeatureValues(
+            feature_id=feature_id, observation_ids=self.observation_ids, values=result
+        )
 
     def feature_values_by_index(self, feature_index: int) -> list[float | None]:
         if feature_index < 0 or feature_index >= self.n_vars:
@@ -538,7 +583,10 @@ class EyckProject:
                     }
                 ),
                 implementation="h5ad.obsm",
-                parameters={"obsm": item.obsm, "dimensions": self.input_dimensions[item.id]},
+                parameters={
+                    "obsm": item.obsm,
+                    "dimensions": self.input_dimensions[item.id],
+                },
                 provenance={"source_h5ad_sha256": self.identities.source_sha256},
             )
             for item in self.spec.embeddings
@@ -576,7 +624,9 @@ class EyckProject:
             raw = json.loads(self.workspace_path.read_text(encoding="utf-8"))
             document = WorkspaceDocument.model_validate(raw)
         except (OSError, json.JSONDecodeError, ValidationError) as exc:
-            raise ProjectError(f"invalid workspace document {self.workspace_path}: {exc}") from exc
+            raise ProjectError(
+                f"invalid workspace document {self.workspace_path}: {exc}"
+            ) from exc
         if document.project_id != self.spec.id:
             raise ProjectError("workspace document belongs to another project")
         if document.source_identity != self.identities.source_sha256:
@@ -602,13 +652,17 @@ class EyckProject:
 
     def _validate_workspace(self, document: WorkspaceDocument) -> None:
         zooms = {item.id: item for item in document.zooms}
-        if len(zooms) != len(document.zooms) or set(zooms) != {item.id for item in document.zooms}:
+        if len(zooms) != len(document.zooms) or set(zooms) != {
+            item.id for item in document.zooms
+        }:
             raise ProjectError("workspace contains duplicate zoom IDs")
         root = zooms.get(document.root_zoom_id)
         if root is None or root.parent_id is not None or root.recipe is not None:
             raise ProjectError("workspace must contain one parentless root zoom")
         if root.observation_ids != self.observation_ids:
-            raise ProjectError("root zoom must contain every loaded observation in source order")
+            raise ProjectError(
+                "root zoom must contain every loaded observation in source order"
+            )
         known_observations = set(self.observation_ids)
         for zoom in document.zooms:
             self._validate_object_id(zoom.id, "zoom")
@@ -625,7 +679,9 @@ class EyckProject:
                 if parent is None:
                     raise ProjectError(f"zoom {zoom.id} has an unknown parent")
                 if not set(zoom.observation_ids) < set(parent.observation_ids):
-                    raise ProjectError(f"zoom {zoom.id} is not a strict subset of its parent")
+                    raise ProjectError(
+                        f"zoom {zoom.id} is not a strict subset of its parent"
+                    )
         for collection, kind in (
             (document.selections, "selection"),
             (document.clusterings, "clustering"),
@@ -646,29 +702,45 @@ class EyckProject:
         for zoom in document.zooms:
             if zoom.initial_embedding_id not in embedding_ids:
                 raise ProjectError(f"zoom {zoom.id} has an unknown initial embedding")
-            if zoom.recipe is not None and not set(zoom.recipe.selection_ids) <= selection_ids:
+            if (
+                zoom.recipe is not None
+                and not set(zoom.recipe.selection_ids) <= selection_ids
+            ):
                 raise ProjectError(f"zoom {zoom.id} recipe has unknown selections")
         for selection in document.selections:
             population = set(zooms[selection.zoom_id].observation_ids)
             if not set(selection.observation_ids) <= population:
-                raise ProjectError(f"selection {selection.id} escapes its zoom population")
+                raise ProjectError(
+                    f"selection {selection.id} escapes its zoom population"
+                )
             if selection.observation_count != len(selection.observation_ids):
-                raise ProjectError(f"selection {selection.id} observation count is invalid")
+                raise ProjectError(
+                    f"selection {selection.id} observation count is invalid"
+                )
             if selection.observation_sha256 != _ordered_hash(selection.observation_ids):
-                raise ProjectError(f"selection {selection.id} observation identity is invalid")
+                raise ProjectError(
+                    f"selection {selection.id} observation identity is invalid"
+                )
             definition = selection.definition
-            if isinstance(definition, BooleanSelectionDefinition) and not set(
-                definition.selection_ids
-            ) <= selection_ids:
-                raise ProjectError(f"selection {selection.id} has unknown selection inputs")
+            if (
+                isinstance(definition, BooleanSelectionDefinition)
+                and not set(definition.selection_ids) <= selection_ids
+            ):
+                raise ProjectError(
+                    f"selection {selection.id} has unknown selection inputs"
+                )
             if isinstance(definition, ClusterSelectionDefinition) and (
                 definition.clustering_id not in clustering_ids
             ):
-                raise ProjectError(f"selection {selection.id} has an unknown clustering")
+                raise ProjectError(
+                    f"selection {selection.id} has an unknown clustering"
+                )
             if isinstance(definition, MarkerCutoffDefinition) and (
                 definition.marker_program_id not in marker_program_ids
             ):
-                raise ProjectError(f"selection {selection.id} has an unknown marker program")
+                raise ProjectError(
+                    f"selection {selection.id} has an unknown marker program"
+                )
 
     def _prepare_workspace(self, document: WorkspaceDocument) -> WorkspaceDocument:
         raw = document.model_dump(mode="json")
@@ -696,10 +768,21 @@ class EyckProject:
         except StopIteration as exc:
             raise ProjectError(f"unknown {kind}: {object_id}") from exc
 
-    def _resolve_recipe(self, workspace: WorkspaceDocument, zoom_id: str, operator: str, selection_ids: list[str]) -> list[str]:
+    def _resolve_recipe(
+        self,
+        workspace: WorkspaceDocument,
+        zoom_id: str,
+        operator: str,
+        selection_ids: list[str],
+    ) -> list[str]:
         if not selection_ids:
-            raise ProjectError("selection recipe must reference at least one named selection")
-        selections = [self._by_id(workspace.selections, item, "selection") for item in selection_ids]
+            raise ProjectError(
+                "selection recipe must reference at least one named selection"
+            )
+        selections = [
+            self._by_id(workspace.selections, item, "selection")
+            for item in selection_ids
+        ]
         if any(item.zoom_id != zoom_id for item in selections):
             raise ProjectError("selection recipe inputs must belong to the target zoom")
         resolved = [set(item.observation_ids) for item in selections]
@@ -709,14 +792,18 @@ class EyckProject:
             selected = set.intersection(*resolved)
         elif operator == "exclusion":
             if len(resolved) < 2:
-                raise ProjectError("exclusion needs a base selection and at least one exclusion")
+                raise ProjectError(
+                    "exclusion needs a base selection and at least one exclusion"
+                )
             selected = resolved[0] - set().union(*resolved[1:])
         else:  # pragma: no cover - Pydantic prevents this through the API
             raise ProjectError(f"unknown Boolean operator: {operator}")
         population = self._by_id(workspace.zooms, zoom_id, "zoom").observation_ids
         return [item for item in population if item in selected]
 
-    def _clustering_values(self, clustering: ClusteringDescriptor) -> tuple[list[str], list[str]]:
+    def _clustering_values(
+        self, clustering: ClusteringDescriptor
+    ) -> tuple[list[str], list[str]]:
         path = self.spec.output_path / clustering.cache_path
         self._assert_generated_path(path)
         try:
@@ -724,7 +811,9 @@ class EyckProject:
                 observations = cached["observation_ids"].astype(str).tolist()
                 clusters = cached["cluster_ids"].astype(str).tolist()
         except (OSError, KeyError, ValueError) as exc:
-            raise ProjectError(f"invalid clustering cache for {clustering.id}: {exc}") from exc
+            raise ProjectError(
+                f"invalid clustering cache for {clustering.id}: {exc}"
+            ) from exc
         return observations, clusters
 
     def clustering_result(self, clustering_id: str) -> ClusteringResult:
@@ -745,13 +834,18 @@ class EyckProject:
     ) -> np.ndarray:
         positions = {item: index for index, item in enumerate(self.observation_ids)}
         if embedding.cache_path is None:
-            source = next((item for item in self.spec.embeddings if item.id == embedding.id), None)
+            source = next(
+                (item for item in self.spec.embeddings if item.id == embedding.id), None
+            )
             if source is None:
                 raise ProjectError(f"embedding {embedding.id} has no coordinate source")
             with self._adata() as data:
                 all_coordinates = np.asarray(data.obsm[source.obsm])
                 coordinates = np.asarray(
-                    [all_coordinates[positions[item], :2] for item in zoom.observation_ids]
+                    [
+                        all_coordinates[positions[item], :2]
+                        for item in zoom.observation_ids
+                    ]
                 )
         else:
             path = self.spec.output_path / embedding.cache_path
@@ -761,22 +855,35 @@ class EyckProject:
                     cached_observations = cached["observation_ids"].astype(str).tolist()
                     cached_coordinates = np.asarray(cached["coordinates"], dtype=float)
             except (OSError, KeyError, ValueError) as exc:
-                raise ProjectError(f"invalid embedding cache for {embedding.id}: {exc}") from exc
+                raise ProjectError(
+                    f"invalid embedding cache for {embedding.id}: {exc}"
+                ) from exc
             if cached_coordinates.ndim != 2 or cached_coordinates.shape[1] < 2:
-                raise ProjectError(f"embedding {embedding.id} has fewer than two dimensions")
-            coordinate_map = dict(zip(cached_observations, cached_coordinates, strict=True))
+                raise ProjectError(
+                    f"embedding {embedding.id} has fewer than two dimensions"
+                )
+            coordinate_map = dict(
+                zip(cached_observations, cached_coordinates, strict=True)
+            )
             missing = set(zoom.observation_ids) - set(coordinate_map)
             if missing:
                 raise ProjectError(
                     f"embedding {embedding.id} does not cover zoom observations: {sorted(missing)}"
                 )
-            coordinates = np.asarray([coordinate_map[item][:2] for item in zoom.observation_ids])
-        if coordinates.shape != (zoom.observation_count, 2) or not np.isfinite(coordinates).all():
+            coordinates = np.asarray(
+                [coordinate_map[item][:2] for item in zoom.observation_ids]
+            )
+        if (
+            coordinates.shape != (zoom.observation_count, 2)
+            or not np.isfinite(coordinates).all()
+        ):
             raise ProjectError(f"embedding {embedding.id} cannot render zoom {zoom.id}")
         return coordinates.astype(float)
 
     @staticmethod
-    def _point_in_polygon(x: float, y: float, polygon: list[tuple[float, float]]) -> bool:
+    def _point_in_polygon(
+        x: float, y: float, polygon: list[tuple[float, float]]
+    ) -> bool:
         inside = False
         for index, (x1, y1) in enumerate(polygon):
             x2, y2 = polygon[(index + 1) % len(polygon)]
@@ -801,7 +908,9 @@ class EyckProject:
         path = directory / f"{identity}.npz"
         self._assert_generated_path(path)
         if not path.exists():
-            descriptor, temporary = tempfile.mkstemp(prefix=f".{identity}.", suffix=".npz", dir=directory)
+            descriptor, temporary = tempfile.mkstemp(
+                prefix=f".{identity}.", suffix=".npz", dir=directory
+            )
             try:
                 with os.fdopen(descriptor, "wb") as handle:
                     np.savez_compressed(handle, **arrays)
@@ -813,7 +922,9 @@ class EyckProject:
                     os.unlink(temporary)
         return path.relative_to(self.spec.output_path).as_posix()
 
-    def create_selection(self, expected_revision: str, request: SelectionCreate) -> WorkspaceDocument:
+    def create_selection(
+        self, expected_revision: str, request: SelectionCreate
+    ) -> WorkspaceDocument:
         self.current_workspace()
         with self.writer_lock():
             workspace = self._workspace_for_update(expected_revision)
@@ -823,23 +934,33 @@ class EyckProject:
             zoom = self._by_id(workspace.zooms, request.zoom_id, "zoom")
             definition = request.definition
             if isinstance(definition, ObservationSetDefinition):
-                if len(definition.observation_ids) != len(set(definition.observation_ids)):
+                if len(definition.observation_ids) != len(
+                    set(definition.observation_ids)
+                ):
                     raise ProjectError("selection observations must be unique")
                 if definition.kind == "lasso":
                     if definition.embedding_id is None or len(definition.polygon) < 3:
-                        raise ProjectError("lasso selections require an embedding and at least three polygon points")
-                    if not all(np.isfinite(point).all() for point in definition.polygon):
+                        raise ProjectError(
+                            "lasso selections require an embedding and at least three polygon points"
+                        )
+                    if not all(
+                        np.isfinite(point).all() for point in definition.polygon
+                    ):
                         raise ProjectError("lasso polygon coordinates must be finite")
                     embedding = self._by_id(
                         workspace.embeddings, definition.embedding_id, "embedding"
                     )
-                    coordinates = self._embedding_coordinates(workspace, zoom, embedding)
+                    coordinates = self._embedding_coordinates(
+                        workspace, zoom, embedding
+                    )
                     selected = [
                         observation_id
                         for observation_id, (x, y) in zip(
                             zoom.observation_ids, coordinates, strict=True
                         )
-                        if self._point_in_polygon(float(x), float(y), definition.polygon)
+                        if self._point_in_polygon(
+                            float(x), float(y), definition.polygon
+                        )
                     ]
                     if definition.observation_ids != selected:
                         raise ProjectError(
@@ -847,25 +968,41 @@ class EyckProject:
                         )
                 else:
                     selected_set = set(definition.observation_ids)
-                    selected = [item for item in zoom.observation_ids if item in selected_set]
+                    selected = [
+                        item for item in zoom.observation_ids if item in selected_set
+                    ]
                     if len(selected) != len(selected_set):
                         raise ProjectError(
                             "selection observations must be unique and within their zoom population"
                         )
             elif isinstance(definition, ClusterSelectionDefinition):
-                clustering = self._by_id(workspace.clusterings, definition.clustering_id, "clustering")
+                clustering = self._by_id(
+                    workspace.clusterings, definition.clustering_id, "clustering"
+                )
                 if clustering.zoom_id != request.zoom_id:
-                    raise ProjectError("clustering selection must use a clustering from the same zoom")
+                    raise ProjectError(
+                        "clustering selection must use a clustering from the same zoom"
+                    )
                 observations, clusters = self._clustering_values(clustering)
                 wanted = set(definition.cluster_ids)
                 unknown = wanted - set(clusters)
                 if unknown:
                     raise ProjectError(f"unknown cluster IDs: {sorted(unknown)}")
-                selected = [observation for observation, cluster in zip(observations, clusters, strict=True) if cluster in wanted]
+                selected = [
+                    observation
+                    for observation, cluster in zip(observations, clusters, strict=True)
+                    if cluster in wanted
+                ]
             elif isinstance(definition, MarkerCutoffDefinition):
-                program = self._by_id(workspace.marker_programs, definition.marker_program_id, "marker program")
+                program = self._by_id(
+                    workspace.marker_programs,
+                    definition.marker_program_id,
+                    "marker program",
+                )
                 if program.zoom_id != request.zoom_id:
-                    raise ProjectError("marker cutoff must use a program from the same zoom")
+                    raise ProjectError(
+                        "marker cutoff must use a program from the same zoom"
+                    )
                 result = self.marker_program_result(program.id, workspace=workspace)
                 comparator = {
                     ">": lambda value: value > definition.cutoff,
@@ -873,13 +1010,28 @@ class EyckProject:
                     "<": lambda value: value < definition.cutoff,
                     "<=": lambda value: value <= definition.cutoff,
                 }[definition.comparator]
-                accepted = {row.cluster_id for row in result.cluster_table if comparator(row.mean_score)}
-                selected = [item for item, cluster in zip(result.observation_ids, result.cluster_ids, strict=True) if cluster in accepted]
+                accepted = {
+                    row.cluster_id
+                    for row in result.cluster_table
+                    if comparator(row.mean_score)
+                }
+                selected = [
+                    item
+                    for item, cluster in zip(
+                        result.observation_ids, result.cluster_ids, strict=True
+                    )
+                    if cluster in accepted
+                ]
             elif isinstance(definition, BooleanSelectionDefinition):
                 if len(definition.selection_ids) < 2:
-                    raise ProjectError("Boolean selections must reference at least two named selections")
+                    raise ProjectError(
+                        "Boolean selections must reference at least two named selections"
+                    )
                 selected = self._resolve_recipe(
-                    workspace, request.zoom_id, definition.operator, definition.selection_ids
+                    workspace,
+                    request.zoom_id,
+                    definition.operator,
+                    definition.selection_ids,
                 )
             else:  # pragma: no cover - discriminated union is exhaustive
                 raise ProjectError("unsupported selection definition")
@@ -895,7 +1047,9 @@ class EyckProject:
             workspace.selections.append(saved)
             return self._save_workspace(workspace)
 
-    def create_zoom(self, expected_revision: str, request: ZoomCreate) -> WorkspaceDocument:
+    def create_zoom(
+        self, expected_revision: str, request: ZoomCreate
+    ) -> WorkspaceDocument:
         self.current_workspace()
         with self.writer_lock():
             workspace = self._workspace_for_update(expected_revision)
@@ -904,7 +1058,10 @@ class EyckProject:
                 raise ProjectError(f"zoom already exists: {request.id}")
             parent = self._by_id(workspace.zooms, request.parent_id, "zoom")
             selected = self._resolve_recipe(
-                workspace, request.parent_id, request.recipe.operator, request.recipe.selection_ids
+                workspace,
+                request.parent_id,
+                request.recipe.operator,
+                request.recipe.selection_ids,
             )
             if not selected:
                 raise ProjectError("child zoom population must not be empty")
@@ -929,7 +1086,9 @@ class EyckProject:
             workspace.zooms.append(zoom)
             return self._save_workspace(workspace)
 
-    def import_clustering(self, expected_revision: str, request: ClusteringImport) -> WorkspaceDocument:
+    def import_clustering(
+        self, expected_revision: str, request: ClusteringImport
+    ) -> WorkspaceDocument:
         self.current_workspace()
         with self.writer_lock():
             workspace = self._workspace_for_update(expected_revision)
@@ -938,11 +1097,15 @@ class EyckProject:
                 raise ProjectError(f"clustering already exists: {request.id}")
             zoom = self._by_id(workspace.zooms, request.zoom_id, "zoom")
             if request.metadata_column not in self.spec.metadata_columns:
-                raise ProjectError(f"metadata column is not declared: {request.metadata_column}")
+                raise ProjectError(
+                    f"metadata column is not declared: {request.metadata_column}"
+                )
             positions = {item: index for index, item in enumerate(self.observation_ids)}
             with self._adata() as data:
                 values = [
-                    "<missing>" if pd.isna(data.obs.iloc[positions[item]][request.metadata_column]) else str(data.obs.iloc[positions[item]][request.metadata_column])
+                    "<missing>"
+                    if pd.isna(data.obs.iloc[positions[item]][request.metadata_column])
+                    else str(data.obs.iloc[positions[item]][request.metadata_column])
                     for item in zoom.observation_ids
                 ]
             identity = canonical_sha256(
@@ -1044,7 +1207,9 @@ class EyckProject:
             )
             return self._save_workspace(workspace)
 
-    def compute_local_analysis(self, expected_revision: str, request: LocalAnalysisCreate) -> WorkspaceDocument:
+    def compute_local_analysis(
+        self, expected_revision: str, request: LocalAnalysisCreate
+    ) -> WorkspaceDocument:
         self.current_workspace()
         with self.writer_lock():
             workspace = self._workspace_for_update(expected_revision)
@@ -1068,9 +1233,13 @@ class EyckProject:
             }
             duplicates = existing_ids & set(requested_ids)
             if duplicates:
-                raise ProjectError(f"analysis output IDs already exist: {sorted(duplicates)}")
+                raise ProjectError(
+                    f"analysis output IDs already exist: {sorted(duplicates)}"
+                )
             zoom = self._by_id(workspace.zooms, request.zoom_id, "zoom")
-            positions = [self.observation_ids.index(item) for item in zoom.observation_ids]
+            positions = [
+                self.observation_ids.index(item) for item in zoom.observation_ids
+            ]
             analysis_source = (
                 "layer:counts"
                 if request.use_counts
@@ -1091,10 +1260,18 @@ class EyckProject:
             else:
                 expression_input = "X"
             resolved_n_top_genes = (
-                request.n_top_genes or 3000 if request.profile == "scanpy_fast" else None
+                request.n_top_genes or 3000
+                if request.profile == "scanpy_fast"
+                else None
             )
-            resolved_n_comps = request.n_comps or 50 if request.profile == "scanpy_fast" else None
-            resolved_n_pcs = request.n_pcs or 50 if request.profile == "scanpy_fast" else request.n_pcs
+            resolved_n_comps = (
+                request.n_comps or 50 if request.profile == "scanpy_fast" else None
+            )
+            resolved_n_pcs = (
+                request.n_pcs or 50
+                if request.profile == "scanpy_fast"
+                else request.n_pcs
+            )
             counts_parameters = {
                 "enabled": request.use_counts,
                 "source_layer": "counts" if request.use_counts else None,
@@ -1253,16 +1430,24 @@ class EyckProject:
             implementation = f"scanpy-local-analysis:{request.profile}"
             clusters_by_id: dict[str, np.ndarray] = {}
             if local.n_obs < 4:
-                matrix = local.X.toarray() if sparse.issparse(local.X) else np.asarray(local.X)
+                matrix = (
+                    local.X.toarray()
+                    if sparse.issparse(local.X)
+                    else np.asarray(local.X)
+                )
                 centered = matrix.astype(float) - np.mean(matrix, axis=0, keepdims=True)
                 if local.n_obs > 1 and centered.shape[1] > 0:
                     left, singular, _ = np.linalg.svd(centered, full_matrices=False)
                     coordinates = left[:, :2] * singular[:2]
                 else:
                     coordinates = np.zeros((local.n_obs, 0), dtype=float)
-                coordinates = np.pad(coordinates, ((0, 0), (0, max(0, 2 - coordinates.shape[1]))))[:, :2]
+                coordinates = np.pad(
+                    coordinates, ((0, 0), (0, max(0, 2 - coordinates.shape[1])))
+                )[:, :2]
                 for output in request.clustering_outputs:
-                    clusters_by_id[output.id] = np.asarray(["0"] * local.n_obs, dtype=str)
+                    clusters_by_id[output.id] = np.asarray(
+                        ["0"] * local.n_obs, dtype=str
+                    )
                 implementation = "eyck.small-dataset-local-analysis.v1"
             else:
                 if request.profile == "scanpy_standard":
@@ -1297,7 +1482,9 @@ class EyckProject:
                         np.asarray(local.var["highly_variable"], dtype=bool).sum()
                     )
                 if pca_parameters is not None:
-                    pca_parameters["resolved_n_comps"] = int(local.obsm["X_pca"].shape[1])
+                    pca_parameters["resolved_n_comps"] = int(
+                        local.obsm["X_pca"].shape[1]
+                    )
                 sc.tl.umap(local, random_state=request.random_state)
                 for index, output in enumerate(request.clustering_outputs):
                     key = f"_eyck_leiden_{index}"
@@ -1407,7 +1594,9 @@ class EyckProject:
         resolved: list[str] = []
         errors: list[str] = []
         for marker in requested:
-            id_matches = [feature_id for feature_id in feature_ids if feature_id == marker]
+            id_matches = [
+                feature_id for feature_id in feature_ids if feature_id == marker
+            ]
             if len(id_matches) == 1:
                 feature_id = id_matches[0]
             elif len(id_matches) > 1:
@@ -1432,7 +1621,9 @@ class EyckProject:
             raise ProjectError("marker resolution failed: " + "; ".join(errors))
         return resolved
 
-    def create_marker_program(self, expected_revision: str, request: MarkerProgramCreate) -> MarkerProgramResult:
+    def create_marker_program(
+        self, expected_revision: str, request: MarkerProgramCreate
+    ) -> MarkerProgramResult:
         self.current_workspace()
         with self.writer_lock():
             workspace = self._workspace_for_update(expected_revision)
@@ -1440,10 +1631,16 @@ class EyckProject:
             if any(item.id == request.id for item in workspace.marker_programs):
                 raise ProjectError(f"marker program already exists: {request.id}")
             zoom = self._by_id(workspace.zooms, request.zoom_id, "zoom")
-            clustering = self._by_id(workspace.clusterings, request.clustering_id, "clustering")
+            clustering = self._by_id(
+                workspace.clusterings, request.clustering_id, "clustering"
+            )
             if clustering.zoom_id != request.zoom_id:
-                raise ProjectError("marker program clustering must belong to the same zoom")
-            positions = [self.observation_ids.index(item) for item in zoom.observation_ids]
+                raise ProjectError(
+                    "marker program clustering must belong to the same zoom"
+                )
+            positions = [
+                self.observation_ids.index(item) for item in zoom.observation_ids
+            ]
             marker_source = self._marker_source_name()
             local = self._local_adata(marker_source, positions)
             import scanpy as sc
@@ -1457,7 +1654,10 @@ class EyckProject:
                 else marker_source
             )
             scoring_feature_symbols = (
-                [None if pd.isna(value) else str(value) for value in scoring_var["symbol"]]
+                [
+                    None if pd.isna(value) else str(value)
+                    for value in scoring_var["symbol"]
+                ]
                 if "symbol" in scoring_var.columns
                 else [None] * len(scoring_feature_ids)
             )
@@ -1478,7 +1678,9 @@ class EyckProject:
             scores = local.obs[score_name].astype(float).to_numpy()
             observations, clusters = self._clustering_values(clustering)
             if observations != zoom.observation_ids:
-                raise ProjectError("clustering cache observation order does not match the zoom")
+                raise ProjectError(
+                    "clustering cache observation order does not match the zoom"
+                )
             cluster_array = np.asarray(clusters, dtype=str)
             means: dict[str, float] = {}
             table: list[MarkerClusterSummary] = []
@@ -1507,7 +1709,9 @@ class EyckProject:
                 "observation_sha256": zoom.observation_sha256,
                 "expression_source": expression_source,
             }
-            implementation = f"scanpy.tl.score_genes:{sc.__version__}+arithmetic-cluster-mean"
+            implementation = (
+                f"scanpy.tl.score_genes:{sc.__version__}+arithmetic-cluster-mean"
+            )
             identity = canonical_sha256(
                 {
                     "implementation": implementation,
@@ -1586,7 +1790,10 @@ class EyckProject:
         coordinates = self._embedding_coordinates(workspace, zoom, embedding)
         with self._adata() as data:
             metadata = {
-                column: [_json_scalar(data.obs.iloc[positions[item]][column]) for item in zoom.observation_ids]
+                column: [
+                    _json_scalar(data.obs.iloc[positions[item]][column])
+                    for item in zoom.observation_ids
+                ]
                 for column in self.spec.metadata_columns
             }
             modalities: dict[str, list[Any]] = {}
@@ -1594,7 +1801,8 @@ class EyckProject:
                 values = np.asarray(data.obsm[modality.obsm])
                 if values.shape[1] == 1:
                     modalities[modality.id] = [
-                        _json_scalar(values[positions[item], 0]) for item in zoom.observation_ids
+                        _json_scalar(values[positions[item], 0])
+                        for item in zoom.observation_ids
                     ]
                 else:
                     for dimension in range(values.shape[1]):
@@ -1624,7 +1832,9 @@ class EyckProject:
         }
         if request.kind == "zoom" and request.id == workspace.root_zoom_id:
             raise ProjectError("the root zoom cannot be deleted")
-        requested_object = self._by_id(collections[request.kind], request.id, request.kind)
+        requested_object = self._by_id(
+            collections[request.kind], request.id, request.kind
+        )
         if request.kind == "embedding" and requested_object.cache_path is None:
             raise ProjectError("source H5AD embeddings cannot be deleted")
         removed = {(request.kind, request.id)}
@@ -1632,21 +1842,36 @@ class EyckProject:
         while changed:
             changed = False
             removed_zooms = {item_id for kind, item_id in removed if kind == "zoom"}
-            removed_selections = {item_id for kind, item_id in removed if kind == "selection"}
-            removed_clusterings = {item_id for kind, item_id in removed if kind == "clustering"}
-            removed_embeddings = {item_id for kind, item_id in removed if kind == "embedding"}
-            removed_programs = {item_id for kind, item_id in removed if kind == "marker_program"}
+            removed_selections = {
+                item_id for kind, item_id in removed if kind == "selection"
+            }
+            removed_clusterings = {
+                item_id for kind, item_id in removed if kind == "clustering"
+            }
+            removed_embeddings = {
+                item_id for kind, item_id in removed if kind == "embedding"
+            }
+            removed_programs = {
+                item_id for kind, item_id in removed if kind == "marker_program"
+            }
             candidates: set[tuple[str, str]] = set()
             for zoom in workspace.zooms:
-                if zoom.parent_id in removed_zooms or (
-                    zoom.recipe and set(zoom.recipe.selection_ids) & removed_selections
-                ) or zoom.initial_embedding_id in removed_embeddings:
+                if (
+                    zoom.parent_id in removed_zooms
+                    or (
+                        zoom.recipe
+                        and set(zoom.recipe.selection_ids) & removed_selections
+                    )
+                    or zoom.initial_embedding_id in removed_embeddings
+                ):
                     candidates.add(("zoom", zoom.id))
             for selection in workspace.selections:
                 definition = selection.definition
                 dependent = selection.zoom_id in removed_zooms
                 if isinstance(definition, BooleanSelectionDefinition):
-                    dependent |= bool(set(definition.selection_ids) & removed_selections)
+                    dependent |= bool(
+                        set(definition.selection_ids) & removed_selections
+                    )
                 elif isinstance(definition, ClusterSelectionDefinition):
                     dependent |= definition.clustering_id in removed_clusterings
                 elif isinstance(definition, MarkerCutoffDefinition):
@@ -1662,18 +1887,33 @@ class EyckProject:
                 if embedding.zoom_id in removed_zooms:
                     candidates.add(("embedding", embedding.id))
             for program in workspace.marker_programs:
-                if program.zoom_id in removed_zooms or program.clustering_id in removed_clusterings:
+                if (
+                    program.zoom_id in removed_zooms
+                    or program.clustering_id in removed_clusterings
+                ):
                     candidates.add(("marker_program", program.id))
             before = len(removed)
             removed |= candidates
             changed = len(removed) != before
-        order = {"zoom": 0, "selection": 1, "clustering": 2, "embedding": 3, "marker_program": 4}
+        order = {
+            "zoom": 0,
+            "selection": 1,
+            "clustering": 2,
+            "embedding": 3,
+            "marker_program": 4,
+        }
         references = [
             WorkspaceObjectRef(kind=kind, id=item_id)
-            for kind, item_id in sorted(removed, key=lambda item: (order[item[0]], item[1]))
+            for kind, item_id in sorted(
+                removed, key=lambda item: (order[item[0]], item[1])
+            )
         ]
-        counts = {kind: sum(item.kind == kind for item in references) for kind in collections}
-        removed_selection_ids = {item.id for item in references if item.kind == "selection"}
+        counts = {
+            kind: sum(item.kind == kind for item in references) for kind in collections
+        }
+        removed_selection_ids = {
+            item.id for item in references if item.kind == "selection"
+        }
         removed_zoom_ids = {item.id for item in references if item.kind == "zoom"}
         affected_memberships = [
             row
@@ -1685,9 +1925,9 @@ class EyckProject:
         payload = {
             "workspace_revision": workspace.revision,
             "membership_revision": memberships.revision,
-            "requested": WorkspaceObjectRef(kind=request.kind, id=request.id).model_dump(
-                mode="json"
-            ),
+            "requested": WorkspaceObjectRef(
+                kind=request.kind, id=request.id
+            ).model_dump(mode="json"),
             "removed": [item.model_dump(mode="json") for item in references],
             "counts": counts,
             "membership_decision_count": len(affected_memberships),
@@ -1705,7 +1945,9 @@ class EyckProject:
         memberships = self.current_memberships()
         return self._deletion_impact(workspace, memberships, request)
 
-    def delete_workspace_objects(self, expected_revision: str, request: DeletionConfirm) -> WorkspaceDocument:
+    def delete_workspace_objects(
+        self, expected_revision: str, request: DeletionConfirm
+    ) -> WorkspaceDocument:
         with self.writer_lock():
             workspace = self._workspace_for_update(expected_revision)
             memberships = self._current_memberships()
@@ -1722,12 +1964,28 @@ class EyckProject:
             ):
                 raise RevisionConflict("deletion impact changed")
             removed = {(item.kind, item.id) for item in current_preview.removed}
-            workspace.zooms = [item for item in workspace.zooms if ("zoom", item.id) not in removed]
-            workspace.selections = [item for item in workspace.selections if ("selection", item.id) not in removed]
-            workspace.clusterings = [item for item in workspace.clusterings if ("clustering", item.id) not in removed]
-            workspace.embeddings = [item for item in workspace.embeddings if ("embedding", item.id) not in removed]
+            workspace.zooms = [
+                item for item in workspace.zooms if ("zoom", item.id) not in removed
+            ]
+            workspace.selections = [
+                item
+                for item in workspace.selections
+                if ("selection", item.id) not in removed
+            ]
+            workspace.clusterings = [
+                item
+                for item in workspace.clusterings
+                if ("clustering", item.id) not in removed
+            ]
+            workspace.embeddings = [
+                item
+                for item in workspace.embeddings
+                if ("embedding", item.id) not in removed
+            ]
             workspace.marker_programs = [
-                item for item in workspace.marker_programs if ("marker_program", item.id) not in removed
+                item
+                for item in workspace.marker_programs
+                if ("marker_program", item.id) not in removed
             ]
             removed_selection_ids = {
                 item_id for kind, item_id in removed if kind == "selection"
@@ -1740,8 +1998,13 @@ class EyckProject:
                 and row.support_id not in removed_selection_ids
                 and row.zoom_id not in removed_zoom_ids
             ]
-            if len(retained_rows) != len(memberships.rows) and memberships.source == "reviewed":
-                raise ProjectError("cannot cascade deletion into reviewed membership state")
+            if (
+                len(retained_rows) != len(memberships.rows)
+                and memberships.source == "reviewed"
+            ):
+                raise ProjectError(
+                    "cannot cascade deletion into reviewed membership state"
+                )
             saved = self._prepare_workspace(workspace)
             updates = {"workspace": saved.model_dump(mode="json")}
             if len(retained_rows) != len(memberships.rows):
@@ -1778,7 +2041,9 @@ class EyckProject:
         requested_deletions = set(request.delete_label_ids)
         unknown = requested_deletions - set(current_by_id)
         if unknown:
-            raise ProjectError(f"unknown labels requested for deletion: {sorted(unknown)}")
+            raise ProjectError(
+                f"unknown labels requested for deletion: {sorted(unknown)}"
+            )
         for label_id in requested_deletions:
             self._validate_object_id(label_id, "label")
         removed = set(requested_deletions)
@@ -1786,9 +2051,7 @@ class EyckProject:
         while changed:
             before = len(removed)
             removed.update(
-                label.id
-                for label in current.labels
-                if set(label.parent_ids) & removed
+                label.id for label in current.labels if set(label.parent_ids) & removed
             )
             changed = len(removed) != before
         accidentally_missing = set(current_by_id) - set(proposed_by_id) - removed
@@ -1799,7 +2062,9 @@ class EyckProject:
             )
         surviving = [label for label in request.labels if label.id not in removed]
         try:
-            document = validate_label_document(LabelDocument(schema_version=1, labels=surviving))
+            document = validate_label_document(
+                LabelDocument(schema_version=1, labels=surviving)
+            )
         except DiscoveryError as exc:
             raise ProjectError(str(exc)) from exc
         changed_ids = sorted(
@@ -1809,12 +2074,18 @@ class EyckProject:
         )
         added_ids = sorted(set(proposed_by_id) - set(current_by_id) - removed)
         current_edges = {
-            (label.id, parent_id) for label in current.labels for parent_id in label.parent_ids
+            (label.id, parent_id)
+            for label in current.labels
+            for parent_id in label.parent_ids
         }
         proposed_edges = {
-            (label.id, parent_id) for label in surviving for parent_id in label.parent_ids
+            (label.id, parent_id)
+            for label in surviving
+            for parent_id in label.parent_ids
         }
-        child_edges = sorted(f"{child}->{parent}" for child, parent in current_edges ^ proposed_edges)
+        child_edges = sorted(
+            f"{child}->{parent}" for child, parent in current_edges ^ proposed_edges
+        )
         semantic_edge_change = any(
             (label.id not in current_by_id and bool(label.parent_ids))
             or (
@@ -1877,7 +2148,10 @@ class EyckProject:
 
     def put_labels(self, expected_revision: str, request: LabelMutation) -> LabelState:
         self.current_workspace()
-        if request.expected_membership_revision is None or request.expected_impact_sha256 is None:
+        if (
+            request.expected_membership_revision is None
+            or request.expected_impact_sha256 is None
+        ):
             raise ProjectError(
                 "label PUT requires expected_membership_revision and expected_impact_sha256"
             )
@@ -1907,8 +2181,13 @@ class EyckProject:
                 if semantic_edge_change
                 else [row for row in memberships.rows if row.label_id not in removed]
             )
-            if len(retained_rows) != len(memberships.rows) and memberships.source == "reviewed":
-                raise ProjectError("cannot cascade label mutation into reviewed membership state")
+            if (
+                len(retained_rows) != len(memberships.rows)
+                and memberships.source == "reviewed"
+            ):
+                raise ProjectError(
+                    "cannot cascade label mutation into reviewed membership state"
+                )
             updates = {"labels": document.model_dump(mode="json")}
             if len(retained_rows) != len(memberships.rows):
                 updates["memberships"] = {
@@ -1946,7 +2225,9 @@ class EyckProject:
                 entities = frame["entity_id"]
             elif "index" in frame.columns:
                 entities = frame["index"]
-            elif frame.index.name in {"index", "entity_id"} or not isinstance(frame.index, pd.RangeIndex):
+            elif frame.index.name in {"index", "entity_id"} or not isinstance(
+                frame.index, pd.RangeIndex
+            ):
                 entities = pd.Series(frame.index, index=frame.index)
             else:
                 entities = pd.Series("0", index=frame.index)
@@ -1968,7 +2249,9 @@ class EyckProject:
             elif not isinstance(frame.index, pd.RangeIndex):
                 observation_ids = frame.index.astype(str).tolist()
             else:
-                raise ProjectError("wide initial memberships need a droplet_id column or named index")
+                raise ProjectError(
+                    "wide initial memberships need a droplet_id column or named index"
+                )
             if not len(frame.columns):
                 raise ProjectError("wide initial memberships have no label columns")
             for row_index, observation_id in enumerate(observation_ids):
@@ -1979,7 +2262,10 @@ class EyckProject:
                             observation_id=observation_id,
                             entity_id="0",
                             label_id=str(label_id),
-                            state=self._binary_state(frame.iloc[row_index][label_id], f"{observation_id}/{label_id}"),
+                            state=self._binary_state(
+                                frame.iloc[row_index][label_id],
+                                f"{observation_id}/{label_id}",
+                            ),
                             decision_view_id="generated_initial",
                             provenance="generated_initial",
                         )
@@ -1990,10 +2276,18 @@ class EyckProject:
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
             rows = [DecisionRow.model_validate(item) for item in raw["rows"]]
-        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValidationError) as exc:
+        except (
+            OSError,
+            json.JSONDecodeError,
+            KeyError,
+            TypeError,
+            ValidationError,
+        ) as exc:
             raise ProjectError(f"invalid membership document {path}: {exc}") from exc
         if raw.get("schema_version") != 1 or raw.get("project_id") != self.spec.id:
-            raise ProjectError(f"membership document does not belong to project {self.spec.id}")
+            raise ProjectError(
+                f"membership document does not belong to project {self.spec.id}"
+            )
         self.validate_rows(rows)
         return MembershipDocument(
             project_id=self.spec.id,
@@ -2026,20 +2320,34 @@ class EyckProject:
             rows=rows,
         )
 
-    def validate_rows(self, rows: list[DecisionRow], *, labels: LabelDocument | None = None) -> None:
+    def validate_rows(
+        self, rows: list[DecisionRow], *, labels: LabelDocument | None = None
+    ) -> None:
         observations = set(self.observation_ids)
-        label_map = {label.id: label for label in (labels or self.current_labels()).labels}
+        label_map = {
+            label.id: label for label in (labels or self.current_labels()).labels
+        }
         decisions: dict[tuple[str, str, str, str], DecisionRow] = {}
-        linked_rows = [row for row in rows if row.selection_id is not None or row.zoom_id is not None]
+        linked_rows = [
+            row
+            for row in rows
+            if row.selection_id is not None or row.zoom_id is not None
+        ]
         workspace = self.current_workspace() if linked_rows else None
-        selection_map = {item.id: item for item in workspace.selections} if workspace else {}
-        selection_observations = {
-            item.id: set(item.observation_ids) for item in workspace.selections
-        } if workspace else {}
+        selection_map = (
+            {item.id: item for item in workspace.selections} if workspace else {}
+        )
+        selection_observations = (
+            {item.id: set(item.observation_ids) for item in workspace.selections}
+            if workspace
+            else {}
+        )
         zoom_map = {item.id: item for item in workspace.zooms} if workspace else {}
-        zoom_observations = {
-            item.id: set(item.observation_ids) for item in workspace.zooms
-        } if workspace else {}
+        zoom_observations = (
+            {item.id: set(item.observation_ids) for item in workspace.zooms}
+            if workspace
+            else {}
+        )
         for row in rows:
             try:
                 validate_safe_id(row.support_id, "support")
@@ -2047,8 +2355,13 @@ class EyckProject:
             except DiscoveryError as exc:
                 raise ProjectError(str(exc)) from exc
             if not row.entity_id or len(row.entity_id) > 128:
-                raise ProjectError("entity_id must contain between 1 and 128 characters")
-            if any(ord(character) < 32 or ord(character) == 127 for character in row.entity_id):
+                raise ProjectError(
+                    "entity_id must contain between 1 and 128 characters"
+                )
+            if any(
+                ord(character) < 32 or ord(character) == 127
+                for character in row.entity_id
+            ):
                 raise ProjectError("entity_id must not contain control characters")
             if row.observation_id not in observations:
                 raise ProjectError(f"unknown observation ID: {row.observation_id}")
@@ -2066,15 +2379,21 @@ class EyckProject:
                 try:
                     selection = selection_map[row.selection_id]
                 except KeyError as exc:
-                    raise ProjectError(f"unknown selection: {row.selection_id}") from exc
+                    raise ProjectError(
+                        f"unknown selection: {row.selection_id}"
+                    ) from exc
                 try:
                     zoom = zoom_map[row.zoom_id]
                 except KeyError as exc:
                     raise ProjectError(f"unknown zoom: {row.zoom_id}") from exc
                 if selection.zoom_id != zoom.id:
-                    raise ProjectError("linked selection does not belong to the linked zoom")
+                    raise ProjectError(
+                        "linked selection does not belong to the linked zoom"
+                    )
                 if row.observation_id not in selection_observations[row.selection_id]:
-                    raise ProjectError("linked observation is not in the linked selection")
+                    raise ProjectError(
+                        "linked observation is not in the linked selection"
+                    )
                 if row.observation_id not in zoom_observations[row.zoom_id]:
                     raise ProjectError("linked observation is not in the linked zoom")
             key = (row.support_id, row.observation_id, row.entity_id, row.label_id)
@@ -2087,7 +2406,9 @@ class EyckProject:
             for parent_id in label_map[row.label_id].parent_ids:
                 parent = decisions.get((*key[:3], parent_id))
                 if parent is not None and parent.state == "absent":
-                    raise ProjectError(f"present label {row.label_id} has absent parent {parent_id}")
+                    raise ProjectError(
+                        f"present label {row.label_id} has absent parent {parent_id}"
+                    )
         for key, row in decisions.items():
             parents = label_map[row.label_id].parent_ids
             if len(parents) < 2 or row.state == "unreviewed":
@@ -2096,11 +2417,21 @@ class EyckProject:
             if any(parent is None for parent in parent_states):
                 continue
             states = [parent.state for parent in parent_states if parent is not None]
-            derived = "absent" if "absent" in states else "present" if all(state == "present" for state in states) else "unreviewed"
+            derived = (
+                "absent"
+                if "absent" in states
+                else "present"
+                if all(state == "present" for state in states)
+                else "unreviewed"
+            )
             if row.state != derived:
-                raise ProjectError(f"multiple-parent label {row.label_id} contradicts its parents")
+                raise ProjectError(
+                    f"multiple-parent label {row.label_id} contradicts its parents"
+                )
 
-    def put_memberships(self, expected_revision: str, rows: list[DecisionRow]) -> MembershipDocument:
+    def put_memberships(
+        self, expected_revision: str, rows: list[DecisionRow]
+    ) -> MembershipDocument:
         with self.writer_lock():
             current = self.current_memberships()
             if current.revision != expected_revision:
@@ -2126,7 +2457,9 @@ class EyckProject:
 
     def _materialize(self, rows: list[DecisionRow]) -> list[DecisionRow]:
         labels = {label.id: label for label in self.current_labels().labels}
-        materialized = {(r.support_id, r.observation_id, r.entity_id, r.label_id): r for r in rows}
+        materialized = {
+            (r.support_id, r.observation_id, r.entity_id, r.label_id): r for r in rows
+        }
         changed = True
         while changed:
             changed = False
@@ -2139,7 +2472,9 @@ class EyckProject:
                     existing = materialized.get(parent_key)
                     if existing is not None:
                         if existing.state == "absent":
-                            raise ProjectError(f"present label {row.label_id} has absent parent {parent_id}")
+                            raise ProjectError(
+                                f"present label {row.label_id} has absent parent {parent_id}"
+                            )
                         continue
                     materialized[parent_key] = DecisionRow(
                         support_id=row.support_id,
@@ -2158,13 +2493,30 @@ class EyckProject:
                     continue
                 domains = {key[:3] for key in materialized}
                 for domain in domains:
-                    parent_rows = [materialized.get((*domain, parent)) for parent in label.parent_ids]
-                    states = [item.state if item else "unreviewed" for item in parent_rows]
-                    state = "absent" if "absent" in states else "present" if all(x == "present" for x in states) else "unreviewed"
+                    parent_rows = [
+                        materialized.get((*domain, parent))
+                        for parent in label.parent_ids
+                    ]
+                    states = [
+                        item.state if item else "unreviewed" for item in parent_rows
+                    ]
+                    state = (
+                        "absent"
+                        if "absent" in states
+                        else "present"
+                        if all(x == "present" for x in states)
+                        else "unreviewed"
+                    )
                     key = (*domain, label.id)
                     existing = materialized.get(key)
-                    if existing is not None and existing.state != "unreviewed" and existing.state != state:
-                        raise ProjectError(f"multiple-parent label {label.id} contradicts its parents")
+                    if (
+                        existing is not None
+                        and existing.state != "unreviewed"
+                        and existing.state != state
+                    ):
+                        raise ProjectError(
+                            f"multiple-parent label {label.id} contradicts its parents"
+                        )
                     if state != "unreviewed" and existing is None:
                         source = next(item for item in parent_rows if item is not None)
                         materialized[key] = DecisionRow(
@@ -2179,7 +2531,15 @@ class EyckProject:
                             zoom_id=source.zoom_id,
                         )
                         changed = True
-        return sorted(materialized.values(), key=lambda row: (row.support_id, row.observation_id, row.entity_id, row.label_id))
+        return sorted(
+            materialized.values(),
+            key=lambda row: (
+                row.support_id,
+                row.observation_id,
+                row.entity_id,
+                row.label_id,
+            ),
+        )
 
     def hierarchy_summary(self) -> HierarchySummary:
         current = self.current_memberships()
@@ -2189,7 +2549,9 @@ class EyckProject:
             materialized_decisions=len(materialized),
             supported_observations=len({row.observation_id for row in current.rows}),
             entities=len({(row.observation_id, row.entity_id) for row in current.rows}),
-            derived_ancestors=sum(row.provenance == "derived_ancestor" for row in materialized),
+            derived_ancestors=sum(
+                row.provenance == "derived_ancestor" for row in materialized
+            ),
             derived_intersections=sum(
                 row.provenance == "derived_intersection" for row in materialized
             ),
@@ -2201,7 +2563,11 @@ class EyckProject:
             if current.revision != expected_revision:
                 raise RevisionConflict("membership revision is stale")
             self.validate_rows(current.rows)
-            materialized = [row for row in self._materialize(current.rows) if row.state != "unreviewed"]
+            materialized = [
+                row
+                for row in self._materialize(current.rows)
+                if row.state != "unreviewed"
+            ]
             membership_records = [
                 {
                     "support_id": row.support_id,
@@ -2250,33 +2616,62 @@ class EyckProject:
                 support_rows=len(support_records),
             )
 
-    def _write_export(self, revision: str, memberships: list[dict[str, Any]], support: list[dict[str, Any]]) -> None:
+    def _write_export(
+        self,
+        revision: str,
+        memberships: list[dict[str, Any]],
+        support: list[dict[str, Any]],
+    ) -> None:
         output = self.spec.output_path
         output.mkdir(parents=True, exist_ok=True)
         stage = Path(tempfile.mkdtemp(prefix=".export-", dir=output))
         membership_path = stage / "memberships.parquet"
         support_path = stage / "support.parquet"
         report_path = stage / "export_report.json"
-        membership_schema = pa.schema([
-            ("support_id", pa.string()), ("observation_id", pa.string()), ("entity_id", pa.string()),
-            ("label_id", pa.string()), ("state", pa.string()), ("provenance", pa.string()),
-            ("decision_view_id", pa.string()), ("selection_id", pa.string()), ("zoom_id", pa.string()),
-        ])
-        support_schema = pa.schema([
-            ("support_id", pa.string()), ("observation_id", pa.string()), ("label_id", pa.string()),
-            ("selection_id", pa.string()), ("accepted_view_id", pa.string()), ("zoom_id", pa.string()),
-        ])
+        membership_schema = pa.schema(
+            [
+                ("support_id", pa.string()),
+                ("observation_id", pa.string()),
+                ("entity_id", pa.string()),
+                ("label_id", pa.string()),
+                ("state", pa.string()),
+                ("provenance", pa.string()),
+                ("decision_view_id", pa.string()),
+                ("selection_id", pa.string()),
+                ("zoom_id", pa.string()),
+            ]
+        )
+        support_schema = pa.schema(
+            [
+                ("support_id", pa.string()),
+                ("observation_id", pa.string()),
+                ("label_id", pa.string()),
+                ("selection_id", pa.string()),
+                ("accepted_view_id", pa.string()),
+                ("zoom_id", pa.string()),
+            ]
+        )
         try:
-            pq.write_table(pa.Table.from_pylist(memberships, schema=membership_schema), membership_path, compression="zstd")
-            pq.write_table(pa.Table.from_pylist(support, schema=support_schema), support_path, compression="zstd")
+            pq.write_table(
+                pa.Table.from_pylist(memberships, schema=membership_schema),
+                membership_path,
+                compression="zstd",
+            )
+            pq.write_table(
+                pa.Table.from_pylist(support, schema=support_schema),
+                support_path,
+                compression="zstd",
+            )
             report = {
                 "schema_version": 1,
                 "project_id": self.spec.id,
-                "project_state_sha256": canonical_sha256({
-                    "manifest": self.identities.manifest_sha256,
-                    "labels": self.identities.labels_semantic_sha256,
-                    "memberships": revision,
-                }),
+                "project_state_sha256": canonical_sha256(
+                    {
+                        "manifest": self.identities.manifest_sha256,
+                        "labels": self.identities.labels_semantic_sha256,
+                        "memberships": revision,
+                    }
+                ),
                 "membership_revision": revision,
                 "identities": self.identities.model_dump(mode="json"),
                 "outputs": {
@@ -2287,7 +2682,12 @@ class EyckProject:
                     "membership_rows": len(memberships),
                     "support_rows": len(support),
                     "observations": len({row["observation_id"] for row in memberships}),
-                    "entities": len({(row["observation_id"], row["entity_id"]) for row in memberships}),
+                    "entities": len(
+                        {
+                            (row["observation_id"], row["entity_id"])
+                            for row in memberships
+                        }
+                    ),
                     "labels": len({row["label_id"] for row in memberships}),
                     "supports": len({row["support_id"] for row in memberships}),
                     "present": sum(row["state"] == "present" for row in memberships),
@@ -2296,7 +2696,11 @@ class EyckProject:
                 "validation": {"valid": True, "errors": []},
             }
             _atomic_json(report_path, report)
-            targets = [output / "memberships.parquet", output / "support.parquet", output / "export_report.json"]
+            targets = [
+                output / "memberships.parquet",
+                output / "support.parquet",
+                output / "export_report.json",
+            ]
             staged = [membership_path, support_path, report_path]
             backups: list[tuple[Path, Path]] = []
             promoted: list[Path] = []

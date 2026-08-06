@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import tomllib
 from dataclasses import dataclass
@@ -56,6 +57,8 @@ class ProjectSpec:
     source_owner: str
     manifest_path: Path
     source_root: Path
+    labels_root: Path
+    output_root: Path
     h5ad_path: Path
     source_digest: str | None
     labels_path: Path
@@ -82,7 +85,12 @@ def validate_safe_id(value: str, kind: str) -> None:
 
 def _confined_path(root: Path, raw: Any, field: str, *, required: bool) -> Path:
     if not isinstance(raw, str) or not raw:
-        raise DiscoveryError(f"{field} must be a non-empty relative path")
+        raise DiscoveryError(f"{field} must be a non-empty path")
+    if raw.startswith("output://"):
+        resolved = _output_uri_path(raw, field)
+        if required and (not resolved.exists() or not resolved.is_file()):
+            raise DiscoveryError(f"{field} does not name a real file: {raw}")
+        return resolved
     relative = Path(raw)
     if relative.is_absolute():
         raise DiscoveryError(f"{field} must be relative to {root}")
@@ -94,6 +102,36 @@ def _confined_path(root: Path, raw: Any, field: str, *, required: bool) -> Path:
     if required and (not resolved.exists() or not resolved.is_file()):
         raise DiscoveryError(f"{field} does not name a real file: {raw}")
     return resolved
+
+
+def _output_uri_path(raw: str, field: str) -> Path:
+    relative = Path(raw.removeprefix("output://"))
+    if not relative.parts or relative.is_absolute() or ".." in relative.parts:
+        raise DiscoveryError(f"{field} contains an invalid output URI: {raw}")
+    root = _configured_output_root(field)
+    resolved = (root / relative).resolve(strict=False)
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise DiscoveryError(f"{field} escapes the output root: {raw}") from exc
+    return resolved
+
+
+def _configured_output_root(field: str) -> Path:
+    output_root = os.environ.get("IOMIX_OUTPUT_ROOT")
+    if not output_root:
+        raise DiscoveryError(
+            f"{field} uses an output URI but IOMIX_OUTPUT_ROOT is not configured"
+        )
+    return Path(output_root).expanduser().resolve()
+
+
+def _confinement_root(source_root: Path, raw: Any, field: str) -> Path:
+    return (
+        _configured_output_root(field)
+        if isinstance(raw, str) and raw.startswith("output://")
+        else source_root
+    )
 
 
 def _named_inputs(raw: Any, field: str) -> tuple[NamedInputSpec, ...]:
@@ -144,7 +182,9 @@ def validate_label_document(document: LabelDocument) -> LabelDocument:
     for label in document.labels:
         missing = set(label.parent_ids) - set(by_id)
         if missing:
-            raise DiscoveryError(f"label {label.id} has missing parents: {sorted(missing)}")
+            raise DiscoveryError(
+                f"label {label.id} has missing parents: {sorted(missing)}"
+            )
 
     visiting: set[str] = set()
     visited: set[str] = set()
@@ -180,15 +220,24 @@ def _parse_project(manifest: Path, raw: Any) -> ProjectSpec:
     if not isinstance(project_id, str):
         raise DiscoveryError("project id must be a string")
     validate_safe_id(project_id, "project")
-    for field in ("title", "description", "dataset_id", "source_owner", "source_digest", "expression_layer"):
+    for field in (
+        "title",
+        "description",
+        "dataset_id",
+        "source_owner",
+        "source_digest",
+        "expression_layer",
+    ):
         if field in raw and not isinstance(raw[field], str):
             raise DiscoveryError(f"project field {field} must be a string")
     source_root = manifest.parent.resolve(strict=True)
     h5ad = _confined_path(source_root, raw["h5ad"], "h5ad", required=True)
     labels_path = _confined_path(source_root, raw["labels"], "labels", required=True)
     output = _confined_path(source_root, raw["output"], "output", required=False)
+    labels_root = _confinement_root(source_root, raw["labels"], "labels")
+    output_root = _confinement_root(source_root, raw["output"], "output")
     if output == source_root:
-        raise DiscoveryError("output must be a directory below the source project root")
+        raise DiscoveryError("output must not be the source project root")
 
     embeddings_raw = raw.get("embeddings")
     if "embedding" in raw:
@@ -201,17 +250,33 @@ def _parse_project(manifest: Path, raw: Any) -> ProjectSpec:
     modalities = _named_inputs(raw.get("modalities", []), "modalities")
 
     metadata = raw.get("metadata_columns", [])
-    if not isinstance(metadata, list) or not all(isinstance(x, str) and x for x in metadata):
+    if not isinstance(metadata, list) or not all(
+        isinstance(x, str) and x for x in metadata
+    ):
         raise DiscoveryError("metadata_columns must be an array of non-empty strings")
     if len(metadata) != len(set(metadata)):
         raise DiscoveryError("metadata_columns contains duplicates")
 
     initial = raw.get("initial_memberships")
     reviewed = raw.get("reviewed_memberships")
-    initial_path = _confined_path(source_root, initial, "initial_memberships", required=True) if initial else None
-    reviewed_path = _confined_path(source_root, reviewed, "reviewed_memberships", required=True) if reviewed else None
-    if initial_path is not None and initial_path != output and output not in initial_path.parents:
-        raise DiscoveryError("initial_memberships must be beneath the declared output directory")
+    initial_path = (
+        _confined_path(source_root, initial, "initial_memberships", required=True)
+        if initial
+        else None
+    )
+    reviewed_path = (
+        _confined_path(source_root, reviewed, "reviewed_memberships", required=True)
+        if reviewed
+        else None
+    )
+    if (
+        initial_path is not None
+        and initial_path != output
+        and output not in initial_path.parents
+    ):
+        raise DiscoveryError(
+            "initial_memberships must be beneath the declared output directory"
+        )
     labels = load_labels(labels_path)
     manifest_identity = canonical_sha256(raw)
     return ProjectSpec(
@@ -222,6 +287,8 @@ def _parse_project(manifest: Path, raw: Any) -> ProjectSpec:
         source_owner=str(raw.get("source_owner", "source")),
         manifest_path=manifest,
         source_root=source_root,
+        labels_root=labels_root,
+        output_root=output_root,
         h5ad_path=h5ad,
         source_digest=raw.get("source_digest"),
         labels_path=labels_path,
@@ -249,7 +316,9 @@ def discover_projects(roots: list[str | Path]) -> dict[str, ProjectSpec]:
                 raise DiscoveryError(f"discovery file is not eyck.toml: {root}")
             manifests.add(root)
         elif root.is_dir():
-            manifests.update(path.resolve(strict=True) for path in root.rglob("eyck.toml"))
+            manifests.update(
+                path.resolve(strict=True) for path in root.rglob("eyck.toml")
+            )
         else:
             raise DiscoveryError(f"discovery root is not a file or directory: {root}")
     if not manifests:
@@ -264,7 +333,9 @@ def discover_projects(roots: list[str | Path]) -> dict[str, ProjectSpec]:
             raise DiscoveryError(f"invalid manifest {manifest}: {exc}") from exc
         unknown = set(raw) - ROOT_KEYS
         if unknown:
-            raise DiscoveryError(f"unknown manifest fields in {manifest}: {sorted(unknown)}")
+            raise DiscoveryError(
+                f"unknown manifest fields in {manifest}: {sorted(unknown)}"
+            )
         if raw.get("schema_version") != 1:
             raise DiscoveryError(f"unsupported schema_version in {manifest}")
         declarations = raw.get("projects")
@@ -273,10 +344,18 @@ def discover_projects(roots: list[str | Path]) -> dict[str, ProjectSpec]:
         for declaration in declarations:
             project = _parse_project(manifest, declaration)
             if project.id in projects:
-                raise DiscoveryError(f"duplicate project ID across manifests: {project.id}")
+                raise DiscoveryError(
+                    f"duplicate project ID across manifests: {project.id}"
+                )
             for other_id, other_output in outputs:
-                if project.output_path == other_output or project.output_path in other_output.parents or other_output in project.output_path.parents:
-                    raise DiscoveryError(f"conflicting output roots for {other_id} and {project.id}")
+                if (
+                    project.output_path == other_output
+                    or project.output_path in other_output.parents
+                    or other_output in project.output_path.parents
+                ):
+                    raise DiscoveryError(
+                        f"conflicting output roots for {other_id} and {project.id}"
+                    )
             projects[project.id] = project
             outputs.append((project.id, project.output_path))
     return projects
