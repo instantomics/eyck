@@ -13,15 +13,21 @@ from urllib.parse import urlsplit
 
 import uvicorn
 
+from .annotated_matrix import (
+    load_export_plan,
+    materialize_exports,
+    validate_annotated_matrix,
+)
 from .app import create_app
-
 
 RESTART_CHILD_ENV = "EYCK_RESTART_CHILD"
 RESTART_GENERATION_ENV = "EYCK_RESTART_GENERATION"
 RESTART_EXIT_CODE = 75
 
 
-def supervisor_loop(serve_once: Callable[[threading.Event], bool], *, restart: bool = True) -> None:
+def supervisor_loop(
+    serve_once: Callable[[threading.Event], bool], *, restart: bool = True
+) -> None:
     """Run server generations until a normal stop or restart is disabled."""
     while True:
         requested = threading.Event()
@@ -42,12 +48,15 @@ def serve(
 ) -> None:
     loopback = host in {"127.0.0.1", "localhost", "::1"}
     if not loopback and not external_origin:
-        raise SystemExit("non-loopback binding requires --external-origin and an authenticated proxy policy")
+        raise SystemExit(
+            "non-loopback binding requires --external-origin and an authenticated proxy policy"
+        )
     origin = (external_origin or f"http://{host}:{port}").rstrip("/")
     parsed = urlsplit(origin)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise SystemExit("--external-origin must be an absolute HTTP(S) origin")
     allowed_host = parsed.hostname or host
+
     def request_restart() -> None:
         threading.Timer(0.2, os._exit, args=(RESTART_EXIT_CODE,)).start()
 
@@ -67,7 +76,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="eyck")
     commands = parser.add_subparsers(dest="command", required=True)
     annotations = commands.add_parser("annotations")
-    annotation_commands = annotations.add_subparsers(dest="annotation_command", required=True)
+    annotation_commands = annotations.add_subparsers(
+        dest="annotation_command", required=True
+    )
     serve_parser = annotation_commands.add_parser("serve")
     serve_parser.add_argument("roots", nargs="+")
     serve_parser.add_argument("--host", default="127.0.0.1")
@@ -76,6 +87,16 @@ def build_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--proxy-prefix", default="")
     serve_parser.add_argument("--no-restart", action="store_true")
     serve_parser.add_argument("--no-open", action="store_true")
+    matrices = commands.add_parser("annotated-matrix")
+    matrix_commands = matrices.add_subparsers(dest="matrix_command", required=True)
+    materialize = matrix_commands.add_parser("materialize")
+    materialize.add_argument("plan")
+    materialize.add_argument("destination")
+    materialize.add_argument("--timeout-seconds", type=float, default=300.0)
+    materialize.add_argument("--replace", action="store_true")
+    validate = matrix_commands.add_parser("validate")
+    validate.add_argument("root")
+    validate.add_argument("--shallow", action="store_true")
     return parser
 
 
@@ -95,6 +116,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             proxy_prefix=arguments.proxy_prefix,
         )
         return 0
+    if arguments.command == "annotated-matrix":
+        if arguments.matrix_command == "materialize":
+            outputs = materialize_exports(
+                load_export_plan(arguments.plan),
+                arguments.destination,
+                timeout_seconds=arguments.timeout_seconds,
+                replace=arguments.replace,
+            )
+            for output in outputs:
+                print(output)
+            return 0
+        if arguments.matrix_command == "validate":
+            validate_annotated_matrix(arguments.root, deep=not arguments.shallow)
+            print("valid")
+            return 0
     raise AssertionError("unreachable command")
 
 
