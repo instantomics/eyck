@@ -70,9 +70,6 @@ test = [
 [dependency-groups]
 dev = ["polyptich"]
 
-[tool.uv.sources]
-polyptich = { git = "ssh://git@github.com/instantomics/polyptich.git", group = "dev" }
-
 [tool.setuptools.package-data]
 eyck = ["web/assets/*"]
 
