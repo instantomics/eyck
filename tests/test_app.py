@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 from pathlib import Path
 
 import pandas as pd
 import pytest
-from fastapi.testclient import TestClient
-
+from conftest import sha256, write_project
 from eyck.app import create_app
 from eyck.cli import supervisor_loop
 from eyck.discovery import discover_projects
 from eyck.project import EyckProject, ProjectError
-
-from conftest import sha256, write_project
+from fastapi.testclient import TestClient
 
 
 @pytest.fixture
@@ -157,6 +157,127 @@ def test_failed_export_preserves_previous_files(project_root: Path, monkeypatch:
     with pytest.raises(RuntimeError, match="writer failed"):
         project.export(revision)
     assert [path.read_bytes() for path in targets] == before
+
+
+def test_project_outputs_have_group_modes_independent_of_umask(
+    project_root: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source = project_root / "nested" / "source"
+    output = source / "output" / "annotation_projects" / "cells"
+    labels = source / "annotations" / "cells" / "labels.json"
+    h5ad = source / "data" / "cells.h5ad"
+    initial = output / "generated_initial.parquet"
+    os.chmod(output, 0o700)
+    os.chmod(labels, 0o644)
+    os.chmod(h5ad, 0o640)
+    os.chmod(initial, 0o600)
+    protected_modes = {
+        path: stat.S_IMODE(path.stat().st_mode)
+        for path in (source, output.parent, labels.parent, labels, h5ad, initial)
+    }
+
+    import eyck.project as project_module
+
+    replaced_output_modes: list[int] = []
+    replaced_output_directory_modes: list[int] = []
+    original_replace = project_module.os.replace
+
+    def inspect_replace(source_path, target_path):
+        source_path = Path(source_path)
+        if source_path.is_relative_to(output):
+            replaced_output_modes.append(stat.S_IMODE(source_path.stat().st_mode))
+            replaced_output_directory_modes.append(
+                stat.S_IMODE(source_path.parent.stat().st_mode)
+            )
+        return original_replace(source_path, target_path)
+
+    monkeypatch.setattr(project_module.os, "replace", inspect_replace)
+    previous_umask = os.umask(0o077)
+    try:
+        with TestClient(create_app([project_root])) as client:
+            workspace = client.get("/api/v1/annotations/cells/workspace").json()
+            os.chmod(output / "workspace.json", 0o600)
+            token = client.get("/api/v1/annotations/cells").json()["csrf_token"]
+            headers = {
+                "origin": "http://testserver",
+                "x-eyck-csrf": token,
+                "If-Match": workspace["revision"],
+            }
+            imported = client.post(
+                "/api/v1/annotations/cells/workspace/clusterings/import",
+                headers=headers,
+                json={
+                    "id": "samples",
+                    "name": "Samples",
+                    "zoom_id": "root",
+                    "metadata_column": "sample",
+                },
+            )
+            assert imported.status_code == 200, imported.text
+            clustering_path = output / imported.json()["clusterings"][0]["cache_path"]
+
+            membership = client.get(
+                "/api/v1/annotations/cells/memberships"
+            ).json()
+            saved = client.put(
+                "/api/v1/annotations/cells/memberships",
+                headers={**headers, "If-Match": membership["revision"]},
+                json={"rows": membership["rows"]},
+            )
+            assert saved.status_code == 200, saved.text
+
+            label_state = client.get("/api/v1/annotations/cells/labels").json()
+            changed_labels = [dict(label) for label in label_state["labels"]]
+            changed_labels[0]["name"] = "Renamed cell"
+            label_preview = client.post(
+                "/api/v1/annotations/cells/labels/impact",
+                headers={**headers, "If-Match": label_state["revision"]},
+                json={"labels": changed_labels},
+            )
+            assert label_preview.status_code == 200, label_preview.text
+            preview = label_preview.json()
+            changed = client.put(
+                "/api/v1/annotations/cells/labels",
+                headers={**headers, "If-Match": label_state["revision"]},
+                json={
+                    "labels": changed_labels,
+                    "expected_membership_revision": preview["membership_revision"],
+                    "expected_impact_sha256": preview["impact_sha256"],
+                },
+            )
+            assert changed.status_code == 200, changed.text
+
+            exported = client.post(
+                "/api/v1/annotations/cells/export",
+                headers={**headers, "If-Match": saved.json()["revision"]},
+            )
+            assert exported.status_code == 200, exported.text
+    finally:
+        os.umask(previous_umask)
+
+    directories = [
+        output,
+        output / "cache",
+        output / "cache" / "clusterings",
+        output / "drafts",
+    ]
+    files = [
+        output / ".eyck.lock",
+        output / "workspace.json",
+        output / "drafts" / "memberships.json",
+        clustering_path,
+        output / "memberships.parquet",
+        output / "support.parquet",
+        output / "export_report.json",
+    ]
+    assert {stat.S_IMODE(path.stat().st_mode) for path in directories} == {0o2770}
+    assert {stat.S_IMODE(path.stat().st_mode) for path in files} == {0o660}
+    assert replaced_output_modes
+    assert set(replaced_output_modes) == {0o660}
+    assert set(replaced_output_directory_modes) == {0o2770}
+    assert {
+        path: stat.S_IMODE(path.stat().st_mode) for path in protected_modes
+    } == protected_modes
 
 
 def test_draft_write_rechecks_child_symlink_confinement(project_root: Path):

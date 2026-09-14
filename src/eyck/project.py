@@ -7,11 +7,13 @@ import json
 import math
 import os
 import shutil
+import stat
 import tempfile
 import threading
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import anndata as ad
 import numpy as np
@@ -125,11 +127,25 @@ def _document_revision(value: dict[str, Any]) -> str:
     return canonical_sha256(logical)
 
 
-def _atomic_json(path: Path, value: Any) -> None:
+OUTPUT_FILE_MODE = 0o660
+OUTPUT_DIRECTORY_MODE = 0o2770
+
+
+def _atomic_json(path: Path, value: Any, *, mode: int | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(value, sort_keys=True, indent=2, ensure_ascii=True) + "\n"
+    if mode is None:
+        try:
+            existing = path.stat(follow_symlinks=False)
+        except FileNotFoundError:
+            mode = 0o600
+        else:
+            if not stat.S_ISREG(existing.st_mode):
+                raise ProjectError(f"atomic JSON target is not a regular file: {path}")
+            mode = stat.S_IMODE(existing.st_mode)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
+        os.fchmod(descriptor, mode)
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(payload)
             handle.flush()
@@ -169,7 +185,7 @@ class EyckProject:
 
     @property
     def lock_path(self) -> Path:
-        return self.spec.output_path.parent / f".{self.spec.output_path.name}.eyck.lock"
+        return self.spec.output_path / ".eyck.lock"
 
     @property
     def transaction_path(self) -> Path:
@@ -179,8 +195,9 @@ class EyckProject:
     def writer_lock(self) -> Iterator[None]:
         self._assert_output_confined()
         with self._thread_lock:
-            self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+            self._prepare_output_file(self.lock_path)
             with FileLock(self.lock_path, timeout=30):
+                self._chmod_output_file(self.lock_path)
                 self._assert_output_confined()
                 yield
 
@@ -193,14 +210,120 @@ class EyckProject:
             raise ProjectError(
                 "project output path no longer resolves within the source project"
             )
+        current = self.spec.output_root
+        for part in self.spec.output_path.relative_to(self.spec.output_root).parts:
+            try:
+                info = current.lstat()
+            except FileNotFoundError:
+                break
+            if stat.S_ISLNK(info.st_mode):
+                raise ProjectError(f"project output path contains a symlink: {current}")
+            current /= part
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            return
+        if stat.S_ISLNK(info.st_mode):
+            raise ProjectError(f"project output path contains a symlink: {current}")
 
     def _assert_generated_path(self, path: Path) -> None:
+        try:
+            relative = path.relative_to(self.spec.output_path)
+        except ValueError as exc:
+            raise ProjectError(
+                f"generated path is outside project output: {path}"
+            ) from exc
+        if ".." in relative.parts:
+            raise ProjectError(f"generated path escapes project output: {path}")
+        self._assert_output_confined()
         output = self.spec.output_path.resolve(strict=False)
         resolved = path.resolve(strict=False)
         if resolved != output and output not in resolved.parents:
             raise ProjectError(
                 f"generated path no longer resolves within project output: {path}"
             )
+        current = self.spec.output_path
+        for part in relative.parts:
+            try:
+                info = current.lstat()
+            except FileNotFoundError:
+                break
+            if stat.S_ISLNK(info.st_mode):
+                raise ProjectError(f"generated path contains a symlink: {current}")
+            current /= part
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            return
+        if stat.S_ISLNK(info.st_mode):
+            raise ProjectError(f"generated path contains a symlink: {current}")
+
+    def _chmod_output_directory(self, path: Path) -> None:
+        self._assert_generated_path(path)
+        descriptor = os.open(
+            path, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+        )
+        try:
+            current_mode = os.fstat(descriptor).st_mode
+            if not stat.S_ISDIR(current_mode):
+                raise ProjectError(f"generated directory is not a directory: {path}")
+            if stat.S_IMODE(current_mode) != OUTPUT_DIRECTORY_MODE:
+                os.fchmod(descriptor, OUTPUT_DIRECTORY_MODE)
+        finally:
+            os.close(descriptor)
+
+    def _mkdir_output(self, path: Path) -> None:
+        self._assert_generated_path(path)
+        output = self.spec.output_path
+        output.mkdir(parents=True, exist_ok=True)
+        self._chmod_output_directory(output)
+        current = output
+        for part in path.relative_to(output).parts:
+            current /= part
+            current.mkdir(exist_ok=True)
+            self._chmod_output_directory(current)
+
+    def _chmod_output_file(self, path: Path) -> None:
+        self._assert_generated_path(path)
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            current_mode = os.fstat(descriptor).st_mode
+            if not stat.S_ISREG(current_mode):
+                raise ProjectError(f"generated file is not a regular file: {path}")
+            if stat.S_IMODE(current_mode) != OUTPUT_FILE_MODE:
+                os.fchmod(descriptor, OUTPUT_FILE_MODE)
+        finally:
+            os.close(descriptor)
+
+    def _prepare_output_file(self, path: Path) -> None:
+        self._mkdir_output(path.parent)
+        self._assert_generated_path(path)
+        descriptor = os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+            OUTPUT_FILE_MODE,
+        )
+        try:
+            current_mode = os.fstat(descriptor).st_mode
+            if not stat.S_ISREG(current_mode):
+                raise ProjectError(f"generated file is not a regular file: {path}")
+            if stat.S_IMODE(current_mode) != OUTPUT_FILE_MODE:
+                os.fchmod(descriptor, OUTPUT_FILE_MODE)
+        finally:
+            os.close(descriptor)
+
+    def _output_mkstemp(
+        self, *, prefix: str, suffix: str = "", dir: Path
+    ) -> tuple[int, str]:
+        self._mkdir_output(dir)
+        descriptor, temporary = tempfile.mkstemp(prefix=prefix, suffix=suffix, dir=dir)
+        os.fchmod(descriptor, OUTPUT_FILE_MODE)
+        return descriptor, temporary
+
+    def _atomic_output_json(self, path: Path, value: Any) -> None:
+        self._mkdir_output(path.parent)
+        self._assert_generated_path(path)
+        _atomic_json(path, value, mode=OUTPUT_FILE_MODE)
 
     def _assert_labels_confined(self) -> None:
         resolved = self.spec.labels_path.resolve(strict=False)
@@ -247,7 +370,10 @@ class EyckProject:
                 self._assert_labels_confined()
             else:
                 self._assert_generated_path(targets[name])
-            _atomic_json(targets[name], updates[name])
+            if name == "labels":
+                _atomic_json(targets[name], updates[name])
+            else:
+                self._atomic_output_json(targets[name], updates[name])
         self.transaction_path.unlink()
         directory = os.open(self.transaction_path.parent, os.O_RDONLY | os.O_DIRECTORY)
         try:
@@ -269,7 +395,7 @@ class EyckProject:
             "generation": canonical_sha256(updates),
             "updates": updates,
         }
-        _atomic_json(self.transaction_path, journal)
+        self._atomic_output_json(self.transaction_path, journal)
         self._recover_transaction_locked()
 
     def _validate_and_identify(self) -> None:
@@ -643,7 +769,9 @@ class EyckProject:
                 if not self.workspace_path.exists():
                     document = self._initial_workspace()
                     self._assert_generated_path(self.workspace_path)
-                    _atomic_json(self.workspace_path, document.model_dump(mode="json"))
+                    self._atomic_output_json(
+                        self.workspace_path, document.model_dump(mode="json")
+                    )
         document = self._read_workspace()
         if self.transaction_path.exists():
             self._recover_if_needed()
@@ -752,7 +880,7 @@ class EyckProject:
     def _save_workspace(self, document: WorkspaceDocument) -> WorkspaceDocument:
         saved = self._prepare_workspace(document)
         self._assert_generated_path(self.workspace_path)
-        _atomic_json(self.workspace_path, saved.model_dump(mode="json"))
+        self._atomic_output_json(self.workspace_path, saved.model_dump(mode="json"))
         return saved
 
     def _workspace_for_update(self, expected_revision: str) -> WorkspaceDocument:
@@ -903,12 +1031,12 @@ class EyckProject:
     def _write_cache(self, category: str, identity: str, **arrays: Any) -> str:
         directory = self.spec.output_path / "cache" / category
         self._assert_generated_path(directory)
-        directory.mkdir(parents=True, exist_ok=True)
+        self._mkdir_output(directory)
         self._assert_generated_path(directory)
         path = directory / f"{identity}.npz"
         self._assert_generated_path(path)
         if not path.exists():
-            descriptor, temporary = tempfile.mkstemp(
+            descriptor, temporary = self._output_mkstemp(
                 prefix=f".{identity}.", suffix=".npz", dir=directory
             )
             try:
@@ -917,6 +1045,7 @@ class EyckProject:
                     handle.flush()
                     os.fsync(handle.fileno())
                 os.replace(temporary, path)
+                self._chmod_output_file(path)
             finally:
                 if os.path.exists(temporary):
                     os.unlink(temporary)
@@ -2447,7 +2576,7 @@ class EyckProject:
                 "rows": [row.model_dump(mode="json") for row in rows],
             }
             self._assert_generated_path(self.draft_path)
-            _atomic_json(self.draft_path, stored)
+            self._atomic_output_json(self.draft_path, stored)
             return MembershipDocument(
                 project_id=self.spec.id,
                 revision=revision,
@@ -2623,8 +2752,9 @@ class EyckProject:
         support: list[dict[str, Any]],
     ) -> None:
         output = self.spec.output_path
-        output.mkdir(parents=True, exist_ok=True)
+        self._mkdir_output(output)
         stage = Path(tempfile.mkdtemp(prefix=".export-", dir=output))
+        self._chmod_output_directory(stage)
         membership_path = stage / "memberships.parquet"
         support_path = stage / "support.parquet"
         report_path = stage / "export_report.json"
@@ -2652,6 +2782,8 @@ class EyckProject:
             ]
         )
         try:
+            self._prepare_output_file(membership_path)
+            self._prepare_output_file(support_path)
             pq.write_table(
                 pa.Table.from_pylist(memberships, schema=membership_schema),
                 membership_path,
@@ -2662,6 +2794,8 @@ class EyckProject:
                 support_path,
                 compression="zstd",
             )
+            self._chmod_output_file(membership_path)
+            self._chmod_output_file(support_path)
             report = {
                 "schema_version": 1,
                 "project_id": self.spec.id,
@@ -2695,7 +2829,7 @@ class EyckProject:
                 },
                 "validation": {"valid": True, "errors": []},
             }
-            _atomic_json(report_path, report)
+            self._atomic_output_json(report_path, report)
             targets = [
                 output / "memberships.parquet",
                 output / "support.parquet",
@@ -2707,11 +2841,13 @@ class EyckProject:
             try:
                 for target in targets:
                     if target.exists():
+                        self._chmod_output_file(target)
                         backup = stage / f"previous-{target.name}"
                         os.replace(target, backup)
                         backups.append((target, backup))
                 for source, target in zip(staged, targets, strict=True):
                     os.replace(source, target)
+                    self._chmod_output_file(target)
                     promoted.append(target)
             except Exception:
                 for target in promoted:
