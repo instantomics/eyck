@@ -35,7 +35,8 @@ def test_controls_match_by_block_and_small_or_unmatched_samples_drop():
     assert sorted(row.treated) == ["t1", "t2"] and sorted(row.controls) == ["c1", "c2"]
 
 
-def test_recovers_a_planted_paired_effect():
+@pytest.mark.parametrize("bulk", [False, True])
+def test_recovers_a_planted_paired_effect(bulk):
     pytest.importorskip("pydeseq2")
     rng = np.random.default_rng(0)
     rows, matrix = [], []
@@ -57,12 +58,16 @@ def test_recovers_a_planted_paired_effect():
             )
             rate = mean * np.exp(shift + (0 if label == "PBS" else effect))
             matrix.append(rng.negative_binomial(20, 20 / (20 + rate)))
+    table = samples(rows)
+    if bulk:
+        table = table.drop(columns="n_cells")
     result = pseudobulk_differential_expression(
-        samples(rows),
+        table,
         sparse.csr_matrix(matrix),
         [f"g{i}" for i in range(300)],
         group="cell_type",
         block="batch",
+        min_cells=None if bulk else 10,
     )
     hits = result[(result.padj <= 0.1) & (result.log2fc.abs() >= 1)].gene
     assert set(hits) >= {f"g{i}" for i in range(20)}

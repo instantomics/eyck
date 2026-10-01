@@ -34,7 +34,7 @@ COLUMNS = (
 
 def contrasts(samples, *, group, block, min_cells=10, min_replicates=2):
     """Treated and matched control sample IDs for every perturbation x group."""
-    usable = samples[samples.n_cells >= min_cells]
+    usable = samples if min_cells is None else samples[samples.n_cells >= min_cells]
     rows = []
     for (perturbation, name), treated in usable[~usable.control].groupby(
         ["perturbation", group], sort=True
@@ -72,6 +72,9 @@ def pseudobulk_differential_expression(
     `samples` needs `sample_id`, `control` (bool), `perturbation` (null for
     controls), `n_cells`, and the `group` and `block` columns; `counts` is a
     samples x genes integer matrix in `samples` order, `genes` the gene names.
+    Set `min_cells=None` for actual bulk RNA-seq libraries, which need no
+    `n_cells` column. The same replicated count model applies without inventing
+    a cell count or imposing a single-cell QC threshold.
     Returns one row per tested gene and contrast with the columns in `COLUMNS`.
     """
     from pydeseq2.dds import DeseqDataSet
