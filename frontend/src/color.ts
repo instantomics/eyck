@@ -40,7 +40,21 @@ export function uniformColors(length: number): ColorResult {
   return { colors, legend: [{ label: "Observations", color: "rgb(70, 112, 146)" }] };
 }
 
-export function colorValues(values: Scalar[] | undefined, length: number): ColorResult {
+const VIRIDIS = [[68, 1, 84], [59, 82, 139], [33, 145, 140], [94, 201, 98], [253, 231, 37]] as const;
+
+function viridis(t: number): number[] {
+  const position = t * (VIRIDIS.length - 1);
+  const low = Math.min(Math.floor(position), VIRIDIS.length - 2);
+  const fraction = position - low;
+  return VIRIDIS[low].map((value, channel) => Math.round(value + (VIRIDIS[low + 1][channel] - value) * fraction));
+}
+
+export interface ColorOptions {
+  /** High-contrast sequential palette with the 1st-99th percentile range. */
+  contrast?: boolean;
+}
+
+export function colorValues(values: Scalar[] | undefined, length: number, options: ColorOptions = {}): ColorResult {
   if (!values || values.length !== length) return uniformColors(length);
   const present = values.filter((value) => value !== null);
   const numeric = present.length > 0 && present.every((value) => typeof value === "number");
@@ -53,6 +67,11 @@ export function colorValues(values: Scalar[] | undefined, length: number): Color
       min = Math.min(min, value);
       max = Math.max(max, value);
     });
+    if (options.contrast && numbers.length > 100) {
+      const sorted = [...numbers].sort((a, b) => a - b);
+      min = sorted[Math.floor(sorted.length * 0.01)];
+      max = sorted[Math.ceil(sorted.length * 0.99) - 1];
+    }
     const span = max - min || 1;
     values.forEach((value, index) => {
       if (typeof value !== "number") {
@@ -60,12 +79,25 @@ export function colorValues(values: Scalar[] | undefined, length: number): Color
         return;
       }
       const t = Math.max(0, Math.min(1, (value - min) / span));
+      if (options.contrast) {
+        writeColor(colors, index, viridis(t));
+        return;
+      }
       writeColor(colors, index, [
         Math.round(232 - t * 202),
         Math.round(238 - t * 115),
         Math.round(241 - t * 83)
       ]);
     });
+    if (options.contrast) {
+      return {
+        colors,
+        legend: [
+          { label: `${min.toPrecision(4)} or less`, color: cssColor(viridis(0)) },
+          { label: `${max.toPrecision(4)} or more`, color: cssColor(viridis(1)) }
+        ]
+      };
+    }
     return {
       colors,
       legend: [

@@ -16,7 +16,13 @@ import type {
   MarkerProgramResult,
   MembershipDraft,
   MembershipPayload,
+  ObservationColumnValues,
   PointsPayload,
+  ProcessDocument,
+  ProcessExportResponse,
+  ProcessFeature,
+  ProcessIndex,
+  ProcessValues,
   ProjectDetail,
   ProjectIndex,
   SelectionCreate,
@@ -303,4 +309,69 @@ export async function waitForRestart(timeoutMs = 60_000): Promise<void> {
     await new Promise((resolve) => window.setTimeout(resolve, 900));
   }
   throw new Error("The server did not become available within one minute");
+}
+
+function projectEndpoint(projectId: string, path: string): string {
+  return publicUrl(`/api/v1/annotations/${encodeURIComponent(projectId)}${path}`);
+}
+
+export function getProcessIndex(projectId: string, signal?: AbortSignal): Promise<ProcessIndex> {
+  return get(projectEndpoint(projectId, "/processes"), signal);
+}
+
+export function getProcessSet(projectId: string, setId: string, signal?: AbortSignal): Promise<ProcessDocument> {
+  return get(projectEndpoint(projectId, `/processes/sets/${encodeURIComponent(setId)}`), signal);
+}
+
+export function putProcessSet(
+  projectId: string,
+  setId: string,
+  revision: string,
+  csrfToken: string,
+  features: ProcessFeature[]
+): Promise<ProcessDocument> {
+  return mutate(projectEndpoint(projectId, `/processes/sets/${encodeURIComponent(setId)}`), "PUT", csrfToken, { features }, revision);
+}
+
+export function previewProcess(
+  projectId: string,
+  csrfToken: string,
+  processId: string,
+  features: ProcessFeature[]
+): Promise<ProcessValues> {
+  return mutate(projectEndpoint(projectId, "/processes/preview"), "POST", csrfToken, { process_id: processId, features });
+}
+
+export function exportProcessSet(
+  projectId: string,
+  setId: string,
+  revision: string,
+  csrfToken: string
+): Promise<ProcessExportResponse> {
+  return mutate(projectEndpoint(projectId, `/processes/sets/${encodeURIComponent(setId)}/export`), "POST", csrfToken, undefined, revision);
+}
+
+export function reviewProcessSet(
+  projectId: string,
+  setId: string,
+  revision: string,
+  csrfToken: string,
+  reviewer: string,
+  processIds: string[] | null
+): Promise<ProcessExportResponse> {
+  return mutate(
+    projectEndpoint(projectId, `/processes/sets/${encodeURIComponent(setId)}/review`),
+    "POST",
+    csrfToken,
+    { reviewer, process_ids: processIds },
+    revision
+  );
+}
+
+export function getObservationColumn(
+  projectId: string,
+  column: string,
+  signal?: AbortSignal
+): Promise<ObservationColumnValues> {
+  return get(projectEndpoint(projectId, `/observations/${encodeURIComponent(column)}`), signal);
 }

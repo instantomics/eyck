@@ -459,6 +459,7 @@ class AnnotationSummary(StrictModel):
     description: str
     n_observations: int
     n_features: int
+    n_processes: int = 0
 
 
 class AnnotationIndex(StrictModel):
@@ -527,3 +528,97 @@ class MembershipPayload(StrictModel):
 class MembershipDraftPut(StrictModel):
     rows: list[DecisionRow]
     support_observation_ids: list[str] = Field(default_factory=list)
+
+
+class ProcessDescriptor(StrictModel):
+    id: str
+    title: str
+    description: str = ""
+
+
+class ProcessGeometry(StrictModel):
+    type: Literal["LineString", "Polygon"]
+    coordinates: list[tuple[float, float]] | list[list[tuple[float, float]]]
+
+
+class ProcessFeatureProperties(StrictModel):
+    process_id: str
+    role: Literal["curve", "region"]
+    embedding_id: str
+    annotator: str = Field(min_length=1)
+    annotation_set: str
+    review_status: Literal["draft", "reviewed"] = "draft"
+    created_at: str | None = None
+    updated_at: str | None = None
+    reviewed_at: str | None = None
+    reviewed_by: str | None = None
+    value_start: float | None = None
+    value_end: float | None = None
+    region_mode: Literal["include", "exclude"] | None = None
+
+
+class ProcessFeature(StrictModel):
+    type: Literal["Feature"] = "Feature"
+    id: str
+    geometry: ProcessGeometry
+    properties: ProcessFeatureProperties
+
+
+class ProcessDocument(StrictModel):
+    """GeoJSON FeatureCollection of process drawings in embedding coordinates."""
+
+    type: Literal["FeatureCollection"] = "FeatureCollection"
+    schema_version: Literal[1] = 1
+    project_id: str
+    annotation_set: str
+    revision: str
+    origin: Literal["draft", "reviewed", "empty"]
+    features: list[ProcessFeature]
+
+
+class ProcessDraftPut(StrictModel):
+    features: list[ProcessFeature]
+
+
+class ProcessPreviewRequest(StrictModel):
+    process_id: str
+    features: list[ProcessFeature]
+
+
+class ProcessValues(StrictModel):
+    process_id: str
+    values: list[float | None]
+    assigned: int
+
+
+class ProcessReviewRequest(StrictModel):
+    reviewer: str = Field(min_length=1)
+    process_ids: list[str] | None = None
+
+
+class ProcessSetSummary(StrictModel):
+    id: str
+    origin: Literal["draft", "reviewed", "empty"]
+    revision: str
+    feature_count: int
+    exported_revision: str | None
+
+
+class ProcessIndex(StrictModel):
+    processes: list[ProcessDescriptor]
+    annotation_sets: list[ProcessSetSummary]
+    embeddings: list[str]
+    metadata_columns: list[str]
+    overlay_columns: list[str]
+
+
+class ProcessExportResponse(StrictModel):
+    annotation_set: str
+    revision: str
+    values_path: str
+    report: dict[str, Any]
+
+
+class ObservationColumnValues(StrictModel):
+    column: str
+    values: list[JsonValue]

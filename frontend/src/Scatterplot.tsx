@@ -1,5 +1,5 @@
 import createREGL, { type Buffer, type Regl } from "regl";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button } from "./ui";
 
 interface ViewState {
@@ -23,6 +23,8 @@ interface Gesture {
 }
 
 export type SelectionMode = "replace" | "add" | "subtract";
+export type DrawMode = "curve" | "region";
+export type ToScreen = (x: number, y: number) => [number, number];
 
 export interface ScatterplotProps {
   coordinates: [number, number][];
@@ -32,6 +34,13 @@ export interface ScatterplotProps {
   onSingleSelect: (index: number) => void;
   onLasso: (indices: number[], mode: SelectionMode, polygon: [number, number][]) => void;
   onClearSelection: () => void;
+  /** Freehand drawing replaces lasso selection; points are in embedding coordinates. */
+  drawing?: {
+    mode: DrawMode | null;
+    onDraw: (points: [number, number][]) => void;
+    renderOverlay: (toScreen: ToScreen) => ReactNode;
+    hint: string;
+  };
 }
 
 function pointInPolygon(point: Point, polygon: Point[]): boolean {
@@ -58,7 +67,8 @@ export function Scatterplot({
   focusedIndices,
   onSingleSelect,
   onLasso,
-  onClearSelection
+  onClearSelection,
+  drawing
 }: ScatterplotProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const renderRef = useRef<(() => void) | null>(null);
@@ -275,6 +285,13 @@ export function Scatterplot({
     y: ((1 - normalized[index][1] * view.scale - view.translate[1]) / 2) * dimensions.height
   });
 
+  const toScreen: ToScreen = (x, y) => [
+    ((((x - coordinateBounds.centerX) / coordinateBounds.range) * 1.82 * view.scale + view.translate[0] + 1) / 2) * dimensions.width,
+    ((1 - ((y - coordinateBounds.centerY) / coordinateBounds.range) * 1.82 * view.scale - view.translate[1]) / 2) * dimensions.height
+  ];
+  const drawMode = drawing?.mode ?? null;
+  const freehand = lassoEnabled || drawMode !== null;
+
   const unproject = (point: Point): [number, number] => {
     const clipX = (point.x / dimensions.width) * 2 - 1;
     const clipY = 1 - (point.y / dimensions.height) * 2;
@@ -290,7 +307,7 @@ export function Scatterplot({
     const point = pointerPoint(event);
     event.currentTarget.setPointerCapture(event.pointerId);
     gestureRef.current = {
-      kind: lassoEnabled ? "lasso" : "pan",
+      kind: freehand ? "lasso" : "pan",
       selectionMode: event.altKey ? "subtract" : event.shiftKey ? "add" : "replace",
       start: point,
       last: point,
@@ -298,7 +315,7 @@ export function Scatterplot({
       startView: view,
       moved: false
     };
-    if (lassoEnabled) setLasso([point]);
+    if (freehand) setLasso([point]);
   };
 
   const handlePointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
@@ -327,6 +344,11 @@ export function Scatterplot({
     gestureRef.current = null;
     if (!gesture) return;
     const point = pointerPoint(event);
+    if (gesture.kind === "lasso" && drawing && drawMode) {
+      if (gesture.points.length >= (drawMode === "curve" ? 2 : 3)) drawing.onDraw(gesture.points.map(unproject));
+      setLasso([]);
+      return;
+    }
     if (gesture.kind === "lasso") {
       if (gesture.points.length >= 3) {
         const indices = normalized.flatMap((_coordinate, index) => (
@@ -381,20 +403,20 @@ export function Scatterplot({
   });
 
   return (
-    <div className={`scatter-shell ${lassoEnabled ? "lasso-mode" : ""}`}>
+    <div className={`scatter-shell ${freehand ? "lasso-mode" : ""}`}>
       <div className="plot-toolbar">
-        <Button
+        {!drawing && <Button
           active={lassoEnabled}
           aria-pressed={lassoEnabled}
           onClick={() => setLassoEnabled((enabled) => !enabled)}
         >
           Lasso
-        </Button>
+        </Button>}
         <Button onClick={resetView}>Fit</Button>
         <Button aria-label="Zoom in" title="Zoom in" onClick={() => zoomBy(1.35)}>+</Button>
         <Button aria-label="Zoom out" title="Zoom out" onClick={() => zoomBy(1 / 1.35)}>-</Button>
-        <Button disabled={selectedIndices.size === 0} onClick={onClearSelection}>Clear</Button>
-        <span>Shift add / Alt subtract / Esc clear</span>
+        {!drawing && <Button disabled={selectedIndices.size === 0} onClick={onClearSelection}>Clear</Button>}
+        <span>{drawing ? drawing.hint : "Shift add / Alt subtract / Esc clear"}</span>
       </div>
       <div className="scatter-stage">
         {plotError ? (
@@ -431,8 +453,13 @@ export function Scatterplot({
             }}
           />
         )}
+        {drawing && (
+          <svg className="drawing-overlay" viewBox={`0 0 ${dimensions.width} ${dimensions.height}`}>
+            {drawing.renderOverlay(toScreen)}
+          </svg>
+        )}
         {lasso.length > 1 && (
-          <svg className="lasso-overlay" viewBox={`0 0 ${dimensions.width} ${dimensions.height}`}>
+          <svg className={`lasso-overlay ${drawMode === "curve" ? "curve-stroke" : ""}`} viewBox={`0 0 ${dimensions.width} ${dimensions.height}`}>
             <polyline points={lasso.map((point) => `${point.x},${point.y}`).join(" ")} />
           </svg>
         )}

@@ -416,7 +416,9 @@ class EyckProject:
                 raise DiscoveryError(
                     f"project {self.spec.id} feature IDs are not unique"
                 )
-            missing_metadata = set(self.spec.metadata_columns) - set(data.obs.columns)
+            missing_metadata = (
+                set(self.spec.metadata_columns) | set(self.spec.overlay_columns)
+            ) - set(data.obs.columns)
             if missing_metadata:
                 raise DiscoveryError(
                     f"missing metadata columns: {sorted(missing_metadata)}"

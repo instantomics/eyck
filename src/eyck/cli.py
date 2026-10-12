@@ -45,6 +45,7 @@ def serve(
     restart: bool,
     open_browser: bool,
     proxy_prefix: str,
+    project_ids: list[str] | None = None,
 ) -> None:
     loopback = host in {"127.0.0.1", "localhost", "::1"}
     if not loopback and not external_origin:
@@ -66,6 +67,7 @@ def serve(
         allowed_origins=(origin,),
         restart_callback=request_restart if restart else None,
         proxy_prefix=proxy_prefix,
+        project_ids=project_ids,
     )
     if open_browser and os.environ.get(RESTART_GENERATION_ENV, "1") == "1":
         webbrowser.open(origin)
@@ -87,6 +89,13 @@ def build_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--proxy-prefix", default="")
     serve_parser.add_argument("--no-restart", action="store_true")
     serve_parser.add_argument("--no-open", action="store_true")
+    serve_parser.add_argument(
+        "--project",
+        dest="projects",
+        action="append",
+        metavar="ID",
+        help="serve only this project (repeatable); other declarations are not parsed",
+    )
     matrices = commands.add_parser("annotated-matrix")
     matrix_commands = matrices.add_subparsers(dest="matrix_command", required=True)
     materialize = matrix_commands.add_parser("materialize")
@@ -114,6 +123,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             restart=not arguments.no_restart,
             open_browser=not arguments.no_open,
             proxy_prefix=arguments.proxy_prefix,
+            project_ids=arguments.projects,
         )
         return 0
     if arguments.command == "annotated-matrix":

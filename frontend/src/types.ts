@@ -16,6 +16,7 @@ export interface ProjectSummary {
   description: string;
   n_observations: number;
   n_features: number;
+  n_processes: number;
 }
 
 export interface ProjectIndex {
@@ -389,4 +390,83 @@ export function labelDescriptors(state: LabelState): LabelDescriptor[] {
     description: label.description,
     ontology_ids: label.ontology_ids
   }));
+}
+
+export interface ProcessDescriptor {
+  id: string;
+  title: string;
+  description: string;
+}
+
+export interface ProcessFeatureProperties {
+  process_id: string;
+  role: "curve" | "region";
+  embedding_id: string;
+  annotator: string;
+  annotation_set: string;
+  review_status?: "draft" | "reviewed";
+  created_at?: string | null;
+  updated_at?: string | null;
+  reviewed_at?: string | null;
+  reviewed_by?: string | null;
+  value_start?: number | null;
+  value_end?: number | null;
+  region_mode?: "include" | "exclude" | null;
+}
+
+export type ProcessGeometry =
+  | { type: "LineString"; coordinates: [number, number][] }
+  | { type: "Polygon"; coordinates: [number, number][][] };
+
+export interface ProcessFeature {
+  type: "Feature";
+  id: string;
+  geometry: ProcessGeometry;
+  properties: ProcessFeatureProperties;
+}
+
+export interface ProcessDocument {
+  type: "FeatureCollection";
+  schema_version: 1;
+  project_id: string;
+  annotation_set: string;
+  revision: string;
+  origin: "draft" | "reviewed" | "empty";
+  features: ProcessFeature[];
+}
+
+export interface ProcessSetSummary {
+  id: string;
+  origin: "draft" | "reviewed" | "empty";
+  revision: string;
+  feature_count: number;
+  exported_revision: string | null;
+}
+
+export interface ProcessIndex {
+  processes: ProcessDescriptor[];
+  annotation_sets: ProcessSetSummary[];
+  embeddings: string[];
+  metadata_columns: string[];
+  overlay_columns: string[];
+}
+
+export interface ProcessValues {
+  process_id: string;
+  values: (number | null)[];
+  assigned: number;
+}
+
+export interface ProcessExportResponse {
+  annotation_set: string;
+  revision: string;
+  values_path: string;
+  report: {
+    processes: Record<string, { assigned_observations: number; review_status: string; curves: number; regions: number }>;
+  };
+}
+
+export interface ObservationColumnValues {
+  column: string;
+  values: Scalar[];
 }

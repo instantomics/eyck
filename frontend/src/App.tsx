@@ -25,6 +25,7 @@ import { DeleteDialog } from "./DeleteDialog";
 import { HierarchyNavigator } from "./HierarchyNavigator";
 import { LabelDagEditor } from "./LabelDagEditor";
 import { MarkerPanel } from "./MarkerPanel";
+import { ProcessWorkbench } from "./ProcessWorkbench";
 import { RecipePanel } from "./RecipePanel";
 import { Scatterplot, type SelectionMode } from "./Scatterplot";
 import { SelectionPanel } from "./SelectionPanel";
@@ -55,10 +56,10 @@ const SELECTION_COLORS = [
   "#568f36", "#a05b32", "#397d86", "#835c44", "#5267b2", "#a56b9e"
 ];
 
-function projectIdFromPath(): string | null {
+function routeFromPath(): { projectId: string; processes: boolean } | null {
   const route = window.location.pathname.slice(basePath.length);
-  const match = route.match(/\/annotations\/([^/]+)\/?$/);
-  return match ? decodeURIComponent(match[1]) : null;
+  const match = route.match(/\/annotations\/([^/]+)(\/processes)?\/?$/);
+  return match ? { projectId: decodeURIComponent(match[1]), processes: Boolean(match[2]) } : null;
 }
 
 function RestartButton({ csrfToken, available }: { csrfToken: string; available: boolean }) {
@@ -83,7 +84,7 @@ function Dashboard() {
     });
     return () => controller.abort();
   }, []);
-  return <main className="dashboard"><header className="dashboard-header"><strong>Eyck</strong><span>Single-cell annotation</span></header><section className="project-section"><div className="project-list-header"><div><h1>Annotation projects</h1><p>Select a dataset to explore from all loaded observations.</p></div>{index && <RestartButton csrfToken={index.csrf_token} available={index.restart_available} />}</div>{error && <Notice tone="danger">{error}</Notice>}{!index && !error && <Loading label="Loading projects" />}{index?.projects.length === 0 && <div className="empty-state">No Eyck annotation projects were discovered.</div>}{index && index.projects.length > 0 && <div className="project-list">{index.projects.map((project) => <a className="project-row" href={`${basePath}/annotations/${encodeURIComponent(project.project_id)}`} key={project.project_id}><div className="project-row-main"><strong>{project.title}</strong><span>{project.description || project.project_id}</span></div><div className="project-row-meta"><span>{formatCount(project.n_observations)} observations</span><span>{formatCount(project.n_features)} features</span><code>{project.project_id}</code></div><span className="project-open">Open root</span></a>)}</div>}</section></main>;
+  return <main className="dashboard"><header className="dashboard-header"><strong>Eyck</strong><span>Single-cell annotation</span></header><section className="project-section"><div className="project-list-header"><div><h1>Annotation projects</h1><p>Select a dataset to explore from all loaded observations.</p></div>{index && <RestartButton csrfToken={index.csrf_token} available={index.restart_available} />}</div>{error && <Notice tone="danger">{error}</Notice>}{!index && !error && <Loading label="Loading projects" />}{index?.projects.length === 0 && <div className="empty-state">No Eyck annotation projects were discovered.</div>}{index && index.projects.length > 0 && <div className="project-list">{index.projects.map((project) => <a className="project-row" href={`${basePath}/annotations/${encodeURIComponent(project.project_id)}`} key={project.project_id}><div className="project-row-main"><strong>{project.title}</strong><span>{project.description || project.project_id}</span></div><div className="project-row-meta"><span>{formatCount(project.n_observations)} observations</span><span>{formatCount(project.n_features)} features</span><code>{project.project_id}</code></div><span className="project-open">Open root{project.n_processes > 0 && <span className="project-open-processes" role="link" onClick={(event) => { event.preventDefault(); window.location.href = `${basePath}/annotations/${encodeURIComponent(project.project_id)}/processes`; }}>Draw processes</span>}</span></a>)}</div>}</section></main>;
 }
 
 function SaveIndicator({ status }: { status: ReturnType<typeof useMembershipDraft>["status"] }) {
@@ -354,7 +355,7 @@ function LoadedWorkbench({ project, workspace: initialWorkspace, onProject }: { 
     <header className="workbench-header"><a className="compact-brand" href={`${basePath}/annotations`}>Eyck</a><div className="project-title"><h1>{project.title}</h1><code>{project.project_id}</code><Badge>{formatCount(project.n_observations)} source cells</Badge></div><div className="header-actions"><SaveIndicator status={memberships.status} /><Button disabled={destructiveDisabled} title={destructiveDisabled ? destructiveDisabledReason : "Edit label identities"} onClick={() => { if (!destructiveDisabled) setLabelsOpen(true); }}>Label DAG</Button><Button tone="primary" disabled={memberships.status !== "saved" || exportState === "working"} onClick={() => {
       setExportState("working"); setExportMessage("");
       void exportAnnotations(project.export_url, memberships.revision, project.csrf_token).then((result) => { setExportState("done"); setExportMessage(`Exported ${formatCount(result.membership_rows)} membership rows.`); }).catch((caught: unknown) => { setExportState("error"); setExportMessage(caught instanceof Error ? caught.message : "Export failed"); });
-    }}>{exportState === "working" ? "Exporting..." : "Export"}</Button><RestartButton csrfToken={project.csrf_token} available={project.restart_available} /></div></header>
+    }}>{exportState === "working" ? "Exporting..." : "Export"}</Button><a className="pt-button" href={`${basePath}/annotations/${encodeURIComponent(project.project_id)}/processes`}>Draw processes</a><RestartButton csrfToken={project.csrf_token} available={project.restart_available} /></div></header>
 
     <nav className="zoom-breadcrumb" aria-label="Zoom path"><span>Population path</span>{path.map((zoom, index) => <button type="button" className={zoom.id === currentZoom.id ? "current" : ""} key={zoom.id} onClick={() => navigate(zoom.id)}><b>{index === 0 ? "Root" : zoom.name}</b><small>{formatCount(zoom.observation_count)} / {formatFraction(zoom.fraction_of_root)} root{zoom.parent_id ? ` / ${formatFraction(zoom.fraction_of_parent)} parent` : ""}</small></button>)}</nav>
 
@@ -387,6 +388,7 @@ function LoadedWorkbench({ project, workspace: initialWorkspace, onProject }: { 
 }
 
 export default function App() {
-  const projectId = projectIdFromPath();
-  return projectId ? <Workbench projectId={projectId} /> : <Dashboard />;
+  const route = routeFromPath();
+  if (!route) return <Dashboard />;
+  return route.processes ? <ProcessWorkbench projectId={route.projectId} /> : <Workbench projectId={route.projectId} />;
 }

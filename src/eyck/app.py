@@ -11,6 +11,8 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+import pandas as pd
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -43,11 +45,20 @@ from .models import (
     MembershipDraftPut,
     MembershipPayload,
     NamedInput,
+    ObservationColumnValues,
+    ProcessDocument,
+    ProcessDraftPut,
+    ProcessExportResponse,
+    ProcessIndex,
+    ProcessPreviewRequest,
+    ProcessReviewRequest,
+    ProcessValues,
     RestartResponse,
     SelectionCreate,
     WorkspaceDocument,
     ZoomCreate,
 )
+from .process_drawings import ProcessAnnotations
 from .project import EyckProject, ProjectError, RevisionConflict
 
 UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
@@ -105,6 +116,20 @@ def _project_or_404(projects: dict[str, EyckProject], project_id: str) -> EyckPr
         raise HTTPException(status_code=404, detail="project not found") from exc
 
 
+def _json_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return value
+    if pd.isna(value):
+        return None
+    if isinstance(value, bool | np.bool_):
+        return bool(value)
+    if isinstance(value, int | np.integer):
+        return int(value)
+    if isinstance(value, float | np.floating):
+        return float(value) if np.isfinite(value) else None
+    return str(value)
+
+
 def _if_match(value: str) -> str:
     return value.removeprefix("W/").strip('"')
 
@@ -117,9 +142,18 @@ def create_app(
     max_request_bytes: int = 64 * 1024 * 1024,
     restart_callback: Callable[[], Any] | None = None,
     proxy_prefix: str = "",
+    project_ids: Sequence[str] | None = None,
 ) -> FastAPI:
-    specs = roots_or_specs if isinstance(roots_or_specs, dict) else discover_projects(list(roots_or_specs))
+    specs = (
+        roots_or_specs
+        if isinstance(roots_or_specs, dict)
+        else discover_projects(
+            list(roots_or_specs),
+            only=set(project_ids) if project_ids else None,
+        )
+    )
     projects = {project_id: EyckProject(spec) for project_id, spec in specs.items()}
+    drawings = {project_id: ProcessAnnotations(project) for project_id, project in projects.items()}
     csrf_token = secrets.token_urlsafe(32)
     origin_set = {origin.rstrip("/") for origin in allowed_origins}
     normalized_prefix = "/" + proxy_prefix.strip("/") if proxy_prefix.strip("/") else ""
@@ -166,6 +200,7 @@ def create_app(
                     description=projects[key].spec.description,
                     n_observations=projects[key].n_obs,
                     n_features=projects[key].n_vars,
+                    n_processes=len(projects[key].spec.processes),
                 )
                 for key in sorted(projects)
             ],
@@ -404,6 +439,74 @@ def create_app(
         if_match: str = Header(..., alias="If-Match"),
     ) -> LabelState:
         return _project_or_404(projects, project_id).put_labels(_if_match(if_match), body)
+
+    def _drawings(project_id: str) -> ProcessAnnotations:
+        _project_or_404(projects, project_id)
+        return drawings[project_id]
+
+    @app.get(
+        f"{api_root}/{{project_id}}/observations/{{column}}",
+        response_model=ObservationColumnValues,
+    )
+    def observation_column(project_id: str, column: str) -> ObservationColumnValues:
+        project = _project_or_404(projects, project_id)
+        if column not in (*project.spec.metadata_columns, *project.spec.overlay_columns):
+            raise ProjectError(f"undeclared observation column: {column}")
+        with project._adata() as data:
+            values = data.obs[column].tolist()
+        return ObservationColumnValues(
+            column=column, values=[_json_value(value) for value in values]
+        )
+
+    @app.get(f"{api_root}/{{project_id}}/processes", response_model=ProcessIndex)
+    def process_index(project_id: str) -> ProcessIndex:
+        return _drawings(project_id).index()
+
+    @app.post(f"{api_root}/{{project_id}}/processes/preview", response_model=ProcessValues)
+    def process_preview(project_id: str, body: ProcessPreviewRequest) -> ProcessValues:
+        return _drawings(project_id).preview(body.process_id, body.features)
+
+    @app.get(
+        f"{api_root}/{{project_id}}/processes/sets/{{set_id}}",
+        response_model=ProcessDocument,
+    )
+    def process_set(project_id: str, set_id: str) -> ProcessDocument:
+        return _drawings(project_id).document(set_id)
+
+    @app.put(
+        f"{api_root}/{{project_id}}/processes/sets/{{set_id}}",
+        response_model=ProcessDocument,
+    )
+    def put_process_set(
+        project_id: str,
+        set_id: str,
+        body: ProcessDraftPut,
+        if_match: str = Header(..., alias="If-Match"),
+    ) -> ProcessDocument:
+        return _drawings(project_id).put_draft(set_id, _if_match(if_match), body.features)
+
+    @app.post(
+        f"{api_root}/{{project_id}}/processes/sets/{{set_id}}/review",
+        response_model=ProcessExportResponse,
+    )
+    def review_process_set(
+        project_id: str,
+        set_id: str,
+        body: ProcessReviewRequest,
+        if_match: str = Header(..., alias="If-Match"),
+    ) -> ProcessExportResponse:
+        return _drawings(project_id).review(set_id, _if_match(if_match), body)
+
+    @app.post(
+        f"{api_root}/{{project_id}}/processes/sets/{{set_id}}/export",
+        response_model=ProcessExportResponse,
+    )
+    def export_process_set(
+        project_id: str,
+        set_id: str,
+        if_match: str = Header(..., alias="If-Match"),
+    ) -> ProcessExportResponse:
+        return _drawings(project_id).export(set_id, _if_match(if_match))
 
     @app.post("/api/v1/restart", response_model=RestartResponse)
     async def restart() -> RestartResponse:

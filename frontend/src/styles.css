@@ -76,7 +76,7 @@ textarea.pt-input { resize: vertical; }
 .project-list-header h1 { margin: 0; font-size: 19px; }
 .project-list-header p { margin: 4px 0 0; color: var(--muted); font-size: 11px; }
 .project-list { background: #fff; border: 1px solid var(--border); }
-.project-row { min-height: 68px; display: grid; grid-template-columns: minmax(220px, 1fr) auto 70px; gap: 18px; align-items: center; padding: 10px 13px; color: inherit; text-decoration: none; border-bottom: 1px solid var(--border); }
+.project-row { min-height: 68px; display: grid; grid-template-columns: minmax(220px, 1fr) auto 90px; gap: 18px; align-items: center; padding: 10px 13px; color: inherit; text-decoration: none; border-bottom: 1px solid var(--border); }
 .project-row:last-child { border: 0; }
 .project-row:hover { background: #f6f9f8; }
 .project-row-main strong, .project-row-main span { display: block; }
@@ -375,4 +375,44 @@ span.tree-main { cursor: default; }
   .modal-footer { flex-wrap: wrap; }
   .project-row { grid-template-columns: minmax(0, 1fr) 65px; }
   .project-row-meta { display: none; }
+}
+
+.project-open-processes { display: block; margin-top: 6px; text-decoration: underline; cursor: pointer; }
+.process-workbench .issue-strip { flex: none; }
+.process-grid { min-height: 0; flex: 1; display: grid; grid-template-columns: 290px minmax(0, 1fr) 250px; }
+.process-panel { min-width: 0; padding: 9px; overflow-y: auto; background: #f8faf9; border-right: 1px solid var(--border); }
+.process-panel:last-child { border-right: 0; border-left: 1px solid var(--border); }
+.process-panel .control-section { display: grid; gap: 7px; padding: 9px 0; border-bottom: 1px solid var(--border); }
+.process-plot { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: #fff; }
+.process-plot .scatter-shell { flex: 1; }
+.inline-controls { display: flex; gap: 5px; }
+.set-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.set-chips button, .process-list button { padding: 4px 7px; color: var(--ink); background: #fff; border: 1px solid var(--border); border-radius: 3px; font-size: 10px; cursor: pointer; text-align: left; }
+.set-chips button small { margin-left: 5px; color: var(--muted); }
+.set-chips button.active, .process-list button.active { color: #164d59; background: var(--accent-soft); border-color: #75a9b3; }
+.process-list { display: grid; gap: 4px; }
+.process-list button strong, .process-list button small { display: block; }
+.process-list button small { margin-top: 2px; color: var(--muted); font: 8px var(--mono); }
+.process-description { margin: 0; color: var(--muted); font-size: 9px; line-height: 1.4; }
+.tool-buttons { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+.feature-list { display: grid; gap: 5px; }
+.feature-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px; align-items: center; padding: 6px; background: #fff; border: 1px solid var(--border); }
+.feature-row strong, .feature-row small { display: block; font-size: 10px; }
+.feature-row small { color: var(--muted); font: 8px var(--mono); }
+.curve-values { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr auto 1fr auto; gap: 4px; align-items: center; font-size: 9px; }
+.process-assigned { color: var(--muted); font-size: 9px; }
+.drawing-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.drawing-overlay marker path { fill: #b3361f; }
+.process-curve polyline { fill: none; stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+.process-curve.current polyline { stroke: #b3361f; }
+.process-curve.current circle { fill: #fff; stroke: #b3361f; stroke-width: 2; }
+.process-curve.other polyline { stroke: rgba(60, 70, 72, .45); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.process-region { stroke-width: 1.5; }
+.process-region.include.current { fill: rgba(35, 103, 120, .08); stroke: #236778; }
+.process-region.exclude.current { fill: rgba(163, 66, 55, .12); stroke: #a34237; stroke-dasharray: 5 3; }
+.process-region.other { fill: none; stroke: rgba(60, 70, 72, .35); stroke-dasharray: 2 3; }
+.lasso-overlay.curve-stroke polyline { fill: none; stroke: #b3361f; stroke-width: 2.5; }
+@media (max-width: 900px) {
+  .process-grid { grid-template-columns: 1fr; overflow-y: auto; }
+  .process-plot { height: 60dvh; }
 }

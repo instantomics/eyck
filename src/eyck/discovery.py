@@ -34,8 +34,11 @@ PROJECT_KEYS = {
     "modalities",
     "initial_memberships",
     "reviewed_memberships",
+    "overlay_columns",
+    "processes",
 }
 NAMED_INPUT_KEYS = {"id", "obsm"}
+PROCESS_KEYS = {"id", "title", "description"}
 
 
 class DiscoveryError(ValueError):
@@ -46,6 +49,13 @@ class DiscoveryError(ValueError):
 class NamedInputSpec:
     id: str
     obsm: str
+
+
+@dataclass(frozen=True)
+class ProcessSpec:
+    id: str
+    title: str
+    description: str
 
 
 @dataclass(frozen=True)
@@ -66,6 +76,8 @@ class ProjectSpec:
     expression_layer: str
     embeddings: tuple[NamedInputSpec, ...]
     metadata_columns: tuple[str, ...]
+    overlay_columns: tuple[str, ...]
+    processes: tuple[ProcessSpec, ...]
     modalities: tuple[NamedInputSpec, ...]
     initial_memberships_path: Path | None
     reviewed_memberships_path: Path | None
@@ -159,6 +171,32 @@ def _named_inputs(raw: Any, field: str) -> tuple[NamedInputSpec, ...]:
     return tuple(result)
 
 
+def _column_list(raw: Any, field: str) -> tuple[str, ...]:
+    if not isinstance(raw, list) or not all(isinstance(x, str) and x for x in raw):
+        raise DiscoveryError(f"{field} must be an array of non-empty strings")
+    if len(raw) != len(set(raw)):
+        raise DiscoveryError(f"{field} contains duplicates")
+    return tuple(raw)
+
+
+def _processes(raw: Any) -> tuple[ProcessSpec, ...]:
+    if not isinstance(raw, list):
+        raise DiscoveryError("processes must be an array")
+    result: list[ProcessSpec] = []
+    for item in raw:
+        if not isinstance(item, dict) or set(item) - PROCESS_KEYS or "id" not in item:
+            raise DiscoveryError(f"invalid processes entry: {item!r}")
+        if not all(isinstance(value, str) for value in item.values()):
+            raise DiscoveryError(f"invalid processes entry: {item!r}")
+        validate_safe_id(item["id"], "process")
+        result.append(
+            ProcessSpec(item["id"], item.get("title", item["id"]), item.get("description", ""))
+        )
+    if len({item.id for item in result}) != len(result):
+        raise DiscoveryError("processes contains duplicate IDs")
+    return tuple(result)
+
+
 def load_labels(path: Path) -> LabelDocument:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -249,13 +287,8 @@ def _parse_project(manifest: Path, raw: Any) -> ProjectSpec:
         raise DiscoveryError(f"project {project_id} declares no inherited embedding")
     modalities = _named_inputs(raw.get("modalities", []), "modalities")
 
-    metadata = raw.get("metadata_columns", [])
-    if not isinstance(metadata, list) or not all(
-        isinstance(x, str) and x for x in metadata
-    ):
-        raise DiscoveryError("metadata_columns must be an array of non-empty strings")
-    if len(metadata) != len(set(metadata)):
-        raise DiscoveryError("metadata_columns contains duplicates")
+    metadata = _column_list(raw.get("metadata_columns", []), "metadata_columns")
+    overlays = _column_list(raw.get("overlay_columns", []), "overlay_columns")
 
     initial = raw.get("initial_memberships")
     reviewed = raw.get("reviewed_memberships")
@@ -295,7 +328,9 @@ def _parse_project(manifest: Path, raw: Any) -> ProjectSpec:
         output_path=output,
         expression_layer=str(raw.get("expression_layer", "X")),
         embeddings=embeddings,
-        metadata_columns=tuple(metadata),
+        metadata_columns=metadata,
+        overlay_columns=overlays,
+        processes=_processes(raw.get("processes", [])),
         modalities=modalities,
         initial_memberships_path=initial_path,
         reviewed_memberships_path=reviewed_path,
@@ -304,8 +339,13 @@ def _parse_project(manifest: Path, raw: Any) -> ProjectSpec:
     )
 
 
-def discover_projects(roots: list[str | Path]) -> dict[str, ProjectSpec]:
-    """Recursively discover every eyck.toml or fail the complete discovery."""
+def discover_projects(
+    roots: list[str | Path], *, only: set[str] | None = None
+) -> dict[str, ProjectSpec]:
+    """Recursively discover every eyck.toml or fail the complete discovery.
+
+    With ``only``, declarations of other projects are skipped unparsed.
+    """
     manifests: set[Path] = set()
     if not roots:
         raise DiscoveryError("at least one discovery root is required")
@@ -342,6 +382,12 @@ def discover_projects(roots: list[str | Path]) -> dict[str, ProjectSpec]:
         if not isinstance(declarations, list) or not declarations:
             raise DiscoveryError(f"{manifest} must contain one or more [[projects]]")
         for declaration in declarations:
+            if (
+                only is not None
+                and isinstance(declaration, dict)
+                and declaration.get("id") not in only
+            ):
+                continue
             project = _parse_project(manifest, declaration)
             if project.id in projects:
                 raise DiscoveryError(
@@ -358,4 +404,6 @@ def discover_projects(roots: list[str | Path]) -> dict[str, ProjectSpec]:
                     )
             projects[project.id] = project
             outputs.append((project.id, project.output_path))
+    if only is not None and set(only) - set(projects):
+        raise DiscoveryError(f"unknown projects: {sorted(set(only) - set(projects))}")
     return projects
