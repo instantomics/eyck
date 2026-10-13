@@ -364,3 +364,22 @@ def test_view_files_appear_without_restart_and_cover_a_subset(tmp_path: Path):
         assert index["embeddings"][1] == {"id": "subset", "title": "Subset", "description": "d1 and d3", "observations": 2, "source": "view"}
         points = client.get("/api/v1/annotations/cells/points", params={"embedding": "subset"}).json()
         assert points["coordinates"] == [[1.0, 2.0], None, [5.0, 6.0]]
+
+
+def test_request_limit_replays_the_body_once_then_waits_for_the_client():
+    import asyncio
+
+    from eyck.app import RequestLimitMiddleware
+
+    incoming = [{"type": "http.request", "body": b"abc", "more_body": False}, {"type": "http.disconnect"}]
+    seen = []
+
+    async def receive():
+        return incoming.pop(0)
+
+    async def app(scope, receive, send):
+        seen.append(await receive())
+        seen.append(await receive())
+
+    asyncio.run(RequestLimitMiddleware(app, 10)({"type": "http", "headers": []}, receive, None))
+    assert seen == [{"type": "http.request", "body": b"abc", "more_body": False}, {"type": "http.disconnect"}]

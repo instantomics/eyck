@@ -476,3 +476,4 @@ span.tree-main { cursor: default; }
   .overview-search { width: 100%; }
   .project-list-header { flex-direction: column; align-items: stretch; }
 }
+.legend-blend .legend-row { white-space: normal; line-height: 1.3; }

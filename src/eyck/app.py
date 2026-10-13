@@ -97,9 +97,11 @@ class RequestLimitMiddleware:
         delivered = False
 
         async def replay() -> Message:
+            # After the buffered body, wait on the client: responses that
+            # watch for a disconnect must not receive empty requests forever.
             nonlocal delivered
             if delivered:
-                return {"type": "http.request", "body": b"", "more_body": False}
+                return await receive()
             delivered = True
             return {"type": "http.request", "body": bytes(body), "more_body": False}
 
