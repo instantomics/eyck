@@ -519,7 +519,8 @@ class AnnotationDetail(StrictModel):
 
 class AnnotationPoints(StrictModel):
     observation_ids: list[str]
-    coordinates: list[tuple[float, float]]
+    # None for cells outside a view that covers a subset of the observations.
+    coordinates: list[tuple[float, float] | None]
     metadata: dict[str, list[Any]]
     modalities: dict[str, list[Any]]
 
@@ -620,10 +621,18 @@ class ProcessSetSummary(StrictModel):
     exported_revision: str | None
 
 
+class ViewDescriptor(StrictModel):
+    id: str
+    title: str
+    description: str
+    observations: int
+    source: Literal["h5ad", "view"]
+
+
 class ProcessIndex(StrictModel):
     processes: list[ProcessDescriptor]
     annotation_sets: list[ProcessSetSummary]
-    embeddings: list[str]
+    embeddings: list[ViewDescriptor]
     metadata_columns: list[str]
     overlay_columns: list[str]
 

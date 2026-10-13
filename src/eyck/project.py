@@ -70,10 +70,17 @@ from .models import (
     ProjectUrls,
     SavedSelection,
     SelectionCreate,
+    ViewDescriptor,
     WorkspaceDocument,
     WorkspaceObjectRef,
     Zoom,
     ZoomCreate,
+)
+from .views import (
+    ViewError,
+    read_view_coordinates,
+    read_view_descriptor,
+    view_paths,
 )
 
 
@@ -168,6 +175,7 @@ class EyckProject:
         self._matrix_lock = threading.Lock()
         self._matrix_cache: dict[str, tuple[Any, pd.DataFrame]] = {}
         self._marker_source: str | None = None
+        self._coordinates: dict[str, tuple[Any, np.ndarray]] = {}
         self._validate_and_identify()
         self._recover_if_needed()
 
@@ -615,12 +623,56 @@ class EyckProject:
             metadata=metadata,
         )
 
-    def annotation_points(self, embedding_id: str) -> AnnotationPoints:
-        matches = [item for item in self.spec.embeddings if item.id == embedding_id]
-        if not matches:
+    def views(self) -> list[ViewDescriptor]:
+        """Declared H5AD embeddings followed by the view files present now."""
+        declared = [
+            ViewDescriptor(
+                id=item.id,
+                title=item.id,
+                description="",
+                observations=self.n_obs,
+                source="h5ad",
+            )
+            for item in self.spec.embeddings
+        ]
+        names = {item.id for item in declared}
+        try:
+            files = [
+                read_view_descriptor(view_id, path)
+                for view_id, path in view_paths(self.spec.views_path).items()
+                if view_id not in names
+            ]
+        except ViewError as exc:
+            raise ProjectError(str(exc)) from exc
+        return declared + files
+
+    def embedding_coordinates(self, embedding_id: str) -> np.ndarray:
+        """2D coordinates in observation order; NaN rows are cells outside the view."""
+        declared = next(
+            (item for item in self.spec.embeddings if item.id == embedding_id), None
+        )
+        path = None if declared else view_paths(self.spec.views_path).get(embedding_id)
+        if declared is None and path is None:
             raise ProjectError(f"unknown embedding: {embedding_id}")
+        key = declared.obsm if declared else path.stat().st_mtime_ns
+        cached = self._coordinates.get(embedding_id)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        if declared is not None:
+            with self._adata() as data:
+                coordinates = np.asarray(data.obsm[declared.obsm], dtype=float)[:, :2]
+        else:
+            positions = {item: index for index, item in enumerate(self.observation_ids)}
+            try:
+                coordinates = read_view_coordinates(embedding_id, path, positions)
+            except ViewError as exc:
+                raise ProjectError(str(exc)) from exc
+        self._coordinates[embedding_id] = (key, coordinates)
+        return coordinates
+
+    def annotation_points(self, embedding_id: str) -> AnnotationPoints:
+        coordinates = self.embedding_coordinates(embedding_id)
         with self._adata() as data:
-            coordinates = np.asarray(data.obsm[matches[0].obsm])
             metadata = {
                 column: [_json_scalar(value) for value in data.obs[column].tolist()]
                 for column in self.spec.metadata_columns
@@ -639,7 +691,10 @@ class EyckProject:
                         ]
         return AnnotationPoints(
             observation_ids=self.observation_ids,
-            coordinates=[(float(x), float(y)) for x, y in coordinates[:, :2]],
+            coordinates=[
+                (float(x), float(y)) if math.isfinite(x) else None
+                for x, y in coordinates.tolist()
+            ],
             metadata=metadata,
             modalities=modalities,
         )

@@ -179,7 +179,9 @@ function numericRange(values: Scalar[], upperPercentile: number): { min: number;
 
 function scaled(value: Scalar, range: { min: number; max: number }): number | null {
   if (typeof value !== "number") return null;
-  return Math.max(0, Math.min(1, (value - range.min) / (range.max - range.min || 1)));
+  // A constant channel, such as a subset marked 1, takes the full colour.
+  if (range.max <= range.min) return 1;
+  return Math.max(0, Math.min(1, (value - range.min) / (range.max - range.min)));
 }
 
 function orderBy(keys: Float64Array): Uint32Array {
@@ -232,9 +234,11 @@ export function displayColors(
       { label: `second ${label(secondRange, "max")}`, color: cssColor(RED) },
       { label: "both", color: cssColor(PURPLE) }
     ]
-    : [
-      { label: label(firstRange, "min"), color: cssColor(paletteColor(options.palette, 0)) },
-      { label: label(firstRange, "max"), color: cssColor(paletteColor(options.palette, 1)) }
-    ];
+    : firstRange.max <= firstRange.min
+      ? [{ label: firstRange.max.toPrecision(3), color: cssColor(paletteColor(options.palette, 1)) }]
+      : [
+        { label: label(firstRange, "min"), color: cssColor(paletteColor(options.palette, 0)) },
+        { label: label(firstRange, "max"), color: cssColor(paletteColor(options.palette, 1)) }
+      ];
   return { colors, legend, order: orderBy(keys) };
 }

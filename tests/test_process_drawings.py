@@ -53,3 +53,16 @@ def test_cells_take_the_position_on_their_nearest_curve_within_scope():
     values = process_values(features, {"umap": cells, "other": other}, len(cells))
     assert values[:3] == pytest.approx([1.0, 0.0, 0.75])
     assert np.isnan(values[3]) and np.isnan(values[4])
+
+
+def test_subset_views_and_region_only_processes():
+    # The second cell is absent from the subset view (NaN coordinates).
+    subset = np.array([[0.0, 0.0], [np.nan, np.nan], [10.0, 0.0]])
+    box = [[-1.0, -1.0], [11.0, -1.0], [11.0, 1.0], [-1.0, 1.0]]
+    curve = feature("c", "curve", [[0.0, 0.0], [10.0, 0.0]], embedding_id="subset")
+    values = process_values([curve], {"subset": subset}, 3)
+    assert values[[0, 2]] == pytest.approx([0.0, 1.0]) and np.isnan(values[1])
+    marked = process_values(
+        [feature("r", "region", box, embedding_id="subset")], {"subset": subset}, 3
+    )
+    assert marked[[0, 2]] == pytest.approx([1.0, 1.0]) and np.isnan(marked[1])

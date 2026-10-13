@@ -130,7 +130,8 @@ export interface ProjectDetail {
 
 export interface PointsPayload {
   observation_ids: string[];
-  coordinates: [number, number][];
+  /** Null for cells outside a view that covers a subset of the observations. */
+  coordinates: ([number, number] | null)[];
   metadata: Record<string, Scalar[]>;
   modalities: Record<string, Scalar[]>;
 }
@@ -459,10 +460,18 @@ export interface ProcessSetSummary {
   exported_revision: string | null;
 }
 
+export interface ViewDescriptor {
+  id: string;
+  title: string;
+  description: string;
+  observations: number;
+  source: "h5ad" | "view";
+}
+
 export interface ProcessIndex {
   processes: ProcessDescriptor[];
   annotation_sets: ProcessSetSummary[];
-  embeddings: string[];
+  embeddings: ViewDescriptor[];
   metadata_columns: string[];
   overlay_columns: string[];
 }

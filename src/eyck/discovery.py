@@ -36,6 +36,7 @@ PROJECT_KEYS = {
     "reviewed_memberships",
     "overlay_columns",
     "processes",
+    "views",
 }
 NAMED_INPUT_KEYS = {"id", "obsm"}
 PROCESS_KEYS = {"id", "title", "description"}
@@ -75,6 +76,7 @@ class ProjectSpec:
     output_path: Path
     expression_layer: str
     embeddings: tuple[NamedInputSpec, ...]
+    views_path: Path | None
     metadata_columns: tuple[str, ...]
     overlay_columns: tuple[str, ...]
     processes: tuple[ProcessSpec, ...]
@@ -286,6 +288,11 @@ def _parse_project(manifest: Path, raw: Any) -> ProjectSpec:
     if not embeddings:
         raise DiscoveryError(f"project {project_id} declares no inherited embedding")
     modalities = _named_inputs(raw.get("modalities", []), "modalities")
+    views = (
+        _confined_path(source_root, raw["views"], "views", required=False)
+        if "views" in raw
+        else None
+    )
 
     metadata = _column_list(raw.get("metadata_columns", []), "metadata_columns")
     overlays = _column_list(raw.get("overlay_columns", []), "overlay_columns")
@@ -328,6 +335,7 @@ def _parse_project(manifest: Path, raw: Any) -> ProjectSpec:
         output_path=output,
         expression_layer=str(raw.get("expression_layer", "X")),
         embeddings=embeddings,
+        views_path=views,
         metadata_columns=metadata,
         overlay_columns=overlays,
         processes=_processes(raw.get("processes", [])),

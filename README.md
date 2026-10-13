@@ -40,6 +40,13 @@ manifest. `labels.json` has `schema_version` and a `labels` array. Each label ha
 an `id`, `name`, optional `description`, optional `ontology_ids`, and
 `parent_ids`.
 
+`views` optionally names a directory of derived views: extra 2D embeddings kept
+beside the H5AD so that producers can add them without rewriting it. Each
+`<view_id>.parquet` holds `observation_id`, `x` and `y` for any subset of the
+observations (cells absent from a view have no coordinates there); its
+`eyck_view` schema metadata may give a `title` and a `description` of how it was
+made. Views are read on request, so new ones appear without a restart.
+
 `overlay_columns` are observation columns offered for colouring on demand,
 unlike `metadata_columns`, which are sent with every point payload. Use
 `--project ID` (repeatable) to serve selected projects without parsing other
@@ -51,9 +58,18 @@ declarations.
 one population. A process is one or more directed curves on one declared
 embedding; each curve runs from `value_start` (default 0, where drawing began)
 to `value_end` (default 1). Optional include and exclude regions, on any
-declared embedding, set the scope. A cell in scope takes the arc-length position
-of its projection onto the nearest curve; every other cell is not applicable.
-Undeclared process IDs may be added while drawing.
+declared embedding or view, set the scope. A cell in scope takes the arc-length
+position of its projection onto the nearest curve; every other cell is not
+applicable. A process drawn with include regions only marks a subset (value 1),
+so cells chosen on one view, including a view of a subpopulation, can be
+coloured on every other view. Undeclared process IDs may be added while drawing.
+
+The page shows one, two, four, or one large and four small plots, each with its
+own embedding and colouring, so several genes or views can be compared while
+drawing; plots of one embedding can share their zoom. Drawings can be selected
+and reshaped (points dragged with their neighbours, added, removed, smoothed, or
+the whole drawing moved) with undo, and cells lassoed in one plot are
+highlighted in all.
 
 Drawings are GeoJSON in embedding coordinates, kept per annotation set so that
 independent sets can be compared. Each feature records the process, embedding,

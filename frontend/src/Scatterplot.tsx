@@ -2,10 +2,12 @@ import createREGL, { type Buffer, type Regl } from "regl";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button } from "./ui";
 
-interface ViewState {
+export interface ViewState {
   scale: number;
   translate: [number, number];
 }
+
+export const DEFAULT_VIEW: ViewState = { scale: 1, translate: [0, 0] };
 
 interface Point {
   x: number;
@@ -23,11 +25,18 @@ interface Gesture {
 }
 
 export type SelectionMode = "replace" | "add" | "subtract";
-export type DrawMode = "curve" | "region";
+/** "select" lasso-selects cells through onLasso; the others draw shapes through onDraw. */
+export type DrawMode = "curve" | "region" | "select";
 export type ToScreen = (x: number, y: number) => [number, number];
+export interface Projection {
+  toScreen: ToScreen;
+  /** Overlay pixel position to embedding coordinates. */
+  fromScreen: (x: number, y: number) => [number, number];
+}
 
 export interface ScatterplotProps {
-  coordinates: [number, number][];
+  /** Embedding coordinates; null for cells outside a view that covers a subset. */
+  coordinates: ([number, number] | null)[];
   colors: Float32Array;
   selectedIndices: Set<number>;
   focusedIndices: Set<number>;
@@ -42,9 +51,17 @@ export interface ScatterplotProps {
   drawing?: {
     mode: DrawMode | null;
     onDraw: (points: [number, number][]) => void;
-    renderOverlay: (toScreen: ToScreen) => ReactNode;
+    renderOverlay: (projection: Projection) => ReactNode;
     hint: string;
+    /** Overlay shapes receive pointer events, for example to edit them. */
+    interactive?: boolean;
   };
+  /** Controlled pan and zoom, for example to link plots of one embedding. */
+  view?: ViewState;
+  onViewChange?: (view: ViewState) => void;
+  title?: ReactNode;
+  /** Called on any pointer press inside the plot. */
+  onActivate?: () => void;
 }
 
 function pointInPolygon(point: Point, polygon: Point[]): boolean {
@@ -74,7 +91,11 @@ export function Scatterplot({
   onClearSelection,
   pointSize = 4,
   drawOrder,
-  drawing
+  drawing,
+  view: controlledView,
+  onViewChange,
+  title,
+  onActivate
 }: ScatterplotProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const renderRef = useRef<(() => void) | null>(null);
@@ -86,49 +107,40 @@ export function Scatterplot({
   pointSizeRef.current = pointSize;
   const gestureRef = useRef<Gesture | null>(null);
   const [dimensions, setDimensions] = useState({ width: 1, height: 1 });
-  const [view, setView] = useState<ViewState>({ scale: 1, translate: [0, 0] });
+  const stageRef = useRef<HTMLDivElement>(null);
+  const [innerView, setInnerView] = useState<ViewState>(DEFAULT_VIEW);
+  const view = controlledView ?? innerView;
   const [lassoEnabled, setLassoEnabled] = useState(false);
   const [lasso, setLasso] = useState<Point[]>([]);
   const [plotError, setPlotError] = useState("");
 
-  const normalized = useMemo(() => {
-    if (coordinates.length === 0) return [];
-    let minX = Infinity;
-    let maxX = -Infinity;
-    let minY = Infinity;
-    let maxY = -Infinity;
-    coordinates.forEach(([x, y]) => {
-      minX = Math.min(minX, x);
-      maxX = Math.max(maxX, x);
-      minY = Math.min(minY, y);
-      maxY = Math.max(maxY, y);
-    });
-    const centerX = (minX + maxX) / 2;
-    const centerY = (minY + maxY) / 2;
-    const range = Math.max(maxX - minX, maxY - minY) || 1;
-    return coordinates.map(([x, y]) => [
-      ((x - centerX) / range) * 1.82,
-      ((y - centerY) / range) * 1.82
-    ] as [number, number]);
-  }, [coordinates]);
   const coordinateBounds = useMemo(() => {
-    if (coordinates.length === 0) return { centerX: 0, centerY: 0, range: 1 };
     let minX = Infinity;
     let maxX = -Infinity;
     let minY = Infinity;
     let maxY = -Infinity;
-    coordinates.forEach(([x, y]) => {
-      minX = Math.min(minX, x);
-      maxX = Math.max(maxX, x);
-      minY = Math.min(minY, y);
-      maxY = Math.max(maxY, y);
+    coordinates.forEach((point) => {
+      if (!point) return;
+      minX = Math.min(minX, point[0]);
+      maxX = Math.max(maxX, point[0]);
+      minY = Math.min(minY, point[1]);
+      maxY = Math.max(maxY, point[1]);
     });
+    if (minX > maxX) return { centerX: 0, centerY: 0, range: 1 };
     return {
       centerX: (minX + maxX) / 2,
       centerY: (minY + maxY) / 2,
       range: Math.max(maxX - minX, maxY - minY) || 1
     };
   }, [coordinates]);
+  // Absent cells are placed far outside the clip space and left out of the draw order.
+  const normalized = useMemo(() => coordinates.map((point) => point
+    ? [
+      ((point[0] - coordinateBounds.centerX) / coordinateBounds.range) * 1.82,
+      ((point[1] - coordinateBounds.centerY) / coordinateBounds.range) * 1.82
+    ] as [number, number]
+    : null), [coordinateBounds, coordinates]);
+  const presentOrder = useMemo(() => Uint32Array.from(normalized.flatMap((point, index) => point ? [index] : [])), [normalized]);
 
   const safeColors = useMemo(() => {
     if (colors.length === normalized.length * 4) return colors;
@@ -141,6 +153,16 @@ export function Scatterplot({
 
   const viewRef = useRef(view);
   viewRef.current = view;
+  const dimensionsRef = useRef(dimensions);
+  dimensionsRef.current = dimensions;
+  const setView = (next: ViewState | ((current: ViewState) => ViewState)) => {
+    const resolved = typeof next === "function" ? next(viewRef.current) : next;
+    viewRef.current = resolved;
+    if (onViewChange) onViewChange(resolved);
+    else setInnerView(resolved);
+  };
+  const setViewRef = useRef(setView);
+  setViewRef.current = setView;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -152,7 +174,7 @@ export function Scatterplot({
       setPlotError(error instanceof Error ? error.message : "WebGL is unavailable");
       return;
     }
-    const positions = new Float32Array(normalized.flat());
+    const positions = new Float32Array(normalized.flatMap((point) => point ?? [1e4, 1e4]));
     const selection = new Float32Array(normalized.length);
     const focus = new Float32Array(normalized.length);
     const positionBuffer = regl.buffer(positions);
@@ -163,7 +185,7 @@ export function Scatterplot({
     selectionBufferRef.current = selectionBuffer;
     focusBufferRef.current = focusBuffer;
     const ordered = regl.hasExtension("OES_element_index_uint")
-      ? regl.elements({ data: Uint32Array.from(normalized.keys()), type: "uint32", primitive: "points" })
+      ? regl.elements({ data: presentOrder, type: "uint32", primitive: "points" })
       : null;
     elementsRef.current = ordered && ((data) => ordered({ data, type: "uint32", primitive: "points" }));
 
@@ -275,10 +297,13 @@ export function Scatterplot({
   }, [safeColors]);
 
   useEffect(() => {
-    if (drawOrder && drawOrder.length === normalized.length) elementsRef.current?.(drawOrder);
-    else elementsRef.current?.(Uint32Array.from(normalized.keys()));
+    if (drawOrder && drawOrder.length === normalized.length) {
+      elementsRef.current?.(presentOrder.length === normalized.length ? drawOrder : drawOrder.filter((index) => normalized[index] !== null));
+    } else {
+      elementsRef.current?.(presentOrder);
+    }
     renderRef.current?.();
-  }, [drawOrder, normalized]);
+  }, [drawOrder, normalized, presentOrder]);
 
   useEffect(() => {
     renderRef.current?.();
@@ -306,10 +331,14 @@ export function Scatterplot({
     renderRef.current?.();
   }, [view]);
 
-  const project = (index: number): Point => ({
-    x: ((normalized[index][0] * view.scale + view.translate[0] + 1) / 2) * dimensions.width,
-    y: ((1 - normalized[index][1] * view.scale - view.translate[1]) / 2) * dimensions.height
-  });
+  const project = (index: number): Point | null => {
+    const point = normalized[index];
+    if (!point) return null;
+    return {
+      x: ((point[0] * view.scale + view.translate[0] + 1) / 2) * dimensions.width,
+      y: ((1 - point[1] * view.scale - view.translate[1]) / 2) * dimensions.height
+    };
+  };
 
   const toScreen: ToScreen = (x, y) => [
     ((((x - coordinateBounds.centerX) / coordinateBounds.range) * 1.82 * view.scale + view.translate[0] + 1) / 2) * dimensions.width,
@@ -370,16 +399,17 @@ export function Scatterplot({
     gestureRef.current = null;
     if (!gesture) return;
     const point = pointerPoint(event);
-    if (gesture.kind === "lasso" && drawing && drawMode) {
+    if (gesture.kind === "lasso" && drawing && drawMode && drawMode !== "select") {
       if (gesture.points.length >= (drawMode === "curve" ? 2 : 3)) drawing.onDraw(gesture.points.map(unproject));
       setLasso([]);
       return;
     }
     if (gesture.kind === "lasso") {
       if (gesture.points.length >= 3) {
-        const indices = normalized.flatMap((_coordinate, index) => (
-          pointInPolygon(project(index), gesture.points) ? [index] : []
-        ));
+        const indices = normalized.flatMap((_coordinate, index) => {
+          const projected = project(index);
+          return projected && pointInPolygon(projected, gesture.points) ? [index] : [];
+        });
         onLasso(indices, gesture.selectionMode, gesture.points.map(unproject));
       }
       setLasso([]);
@@ -390,6 +420,7 @@ export function Scatterplot({
     let nearestDistance = 12;
     normalized.forEach((_coordinate, index) => {
       const candidate = project(index);
+      if (!candidate) return;
       const distance = Math.hypot(candidate.x - point.x, candidate.y - point.y);
       if (distance < nearestDistance) {
         nearest = index;
@@ -400,25 +431,33 @@ export function Scatterplot({
     else onClearSelection();
   };
 
-  const handleWheel = (event: React.WheelEvent<HTMLCanvasElement>) => {
-    event.preventDefault();
-    const rect = event.currentTarget.getBoundingClientRect();
-    const cursor: [number, number] = [
-      ((event.clientX - rect.left) / rect.width) * 2 - 1,
-      1 - ((event.clientY - rect.top) / rect.height) * 2
-    ];
-    const nextScale = Math.max(0.35, Math.min(30, view.scale * Math.exp(-event.deltaY * 0.0015)));
-    const ratio = nextScale / view.scale;
-    setView({
-      scale: nextScale,
-      translate: [
-        cursor[0] - (cursor[0] - view.translate[0]) * ratio,
-        cursor[1] - (cursor[1] - view.translate[1]) * ratio
-      ]
-    });
-  };
+  // A native listener, so that zooming over overlay shapes cannot scroll the page.
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    const handleWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const rect = stage.getBoundingClientRect();
+      const cursor: [number, number] = [
+        ((event.clientX - rect.left) / rect.width) * 2 - 1,
+        1 - ((event.clientY - rect.top) / rect.height) * 2
+      ];
+      const current = viewRef.current;
+      const nextScale = Math.max(0.35, Math.min(30, current.scale * Math.exp(-event.deltaY * 0.0015)));
+      const ratio = nextScale / current.scale;
+      setViewRef.current({
+        scale: nextScale,
+        translate: [
+          cursor[0] - (cursor[0] - current.translate[0]) * ratio,
+          cursor[1] - (cursor[1] - current.translate[1]) * ratio
+        ]
+      });
+    };
+    stage.addEventListener("wheel", handleWheel, { passive: false });
+    return () => stage.removeEventListener("wheel", handleWheel);
+  }, []);
 
-  const resetView = () => setView({ scale: 1, translate: [0, 0] });
+  const resetView = () => setView(DEFAULT_VIEW);
   const zoomBy = (factor: number) => setView((current) => {
     const scale = Math.max(0.35, Math.min(30, current.scale * factor));
     const ratio = scale / current.scale;
@@ -429,8 +468,9 @@ export function Scatterplot({
   });
 
   return (
-    <div className={`scatter-shell ${freehand ? "lasso-mode" : ""}`}>
+    <div className={`scatter-shell ${freehand ? "lasso-mode" : ""}`} onPointerDownCapture={onActivate}>
       <div className="plot-toolbar">
+        {title && <div className="plot-title">{title}</div>}
         {!drawing && <Button
           active={lassoEnabled}
           aria-pressed={lassoEnabled}
@@ -444,7 +484,7 @@ export function Scatterplot({
         {!drawing && <Button disabled={selectedIndices.size === 0} onClick={onClearSelection}>Clear</Button>}
         <span>{drawing ? drawing.hint : "Shift add / Alt subtract / Esc clear"}</span>
       </div>
-      <div className="scatter-stage">
+      <div className="scatter-stage" ref={stageRef}>
         {plotError ? (
           <div className="plot-fallback" role="alert">
             <strong>Scatterplot unavailable</strong>
@@ -464,7 +504,6 @@ export function Scatterplot({
               gestureRef.current = null;
               setLasso([]);
             }}
-            onWheel={handleWheel}
             onKeyDown={(event) => {
               if (event.key === "Escape") {
                 event.preventDefault();
@@ -480,12 +519,12 @@ export function Scatterplot({
           />
         )}
         {drawing && (
-          <svg className="drawing-overlay" viewBox={`0 0 ${dimensions.width} ${dimensions.height}`}>
-            {drawing.renderOverlay(toScreen)}
+          <svg className={`drawing-overlay ${drawing.interactive ? "interactive" : ""}`} viewBox={`0 0 ${dimensions.width} ${dimensions.height}`}>
+            {drawing.renderOverlay({ toScreen, fromScreen: (x, y) => unproject({ x, y }) })}
           </svg>
         )}
         {lasso.length > 1 && (
-          <svg className={`lasso-overlay ${drawMode === "curve" ? "curve-stroke" : ""}`} viewBox={`0 0 ${dimensions.width} ${dimensions.height}`}>
+          <svg className={`lasso-overlay ${drawMode === "curve" ? "curve-stroke" : drawMode === "select" ? "select-stroke" : ""}`} viewBox={`0 0 ${dimensions.width} ${dimensions.height}`}>
             <polyline points={lasso.map((point) => `${point.x},${point.y}`).join(" ")} />
           </svg>
         )}

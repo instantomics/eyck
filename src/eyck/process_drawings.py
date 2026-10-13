@@ -6,7 +6,10 @@ drawing began) to ``value_end``. Optional regions, possibly on other embeddings,
 restrict which cells receive a value: a cell is in scope when it lies inside any
 include region (or when there are none) and inside no exclude region. Every cell
 in scope takes the value of its orthogonal projection onto the nearest curve;
-all other cells are not applicable (NaN).
+all other cells are not applicable (NaN). A process drawn with include regions
+but no curve marks a subset of cells: every cell in scope takes the value 1.
+Cells outside a view that embeds only a subpopulation lie in no region of that
+view and cannot project onto its curves.
 
 Drawings are stored per annotation set as GeoJSON: an autosaved draft and a
 reviewed copy, both beneath the project output, mirroring Bruegel's draft and
@@ -90,10 +93,10 @@ def process_values(
     curves = [item for item in features if item.properties.role == "curve"]
     regions = [item for item in features if item.properties.role == "region"]
     values = np.full(n_obs, np.nan)
-    if not curves:
+    if not curves and not regions:
         return values
     curve_embeddings = {item.properties.embedding_id for item in curves}
-    if len(curve_embeddings) != 1:
+    if len(curve_embeddings) > 1:
         raise ValueError(
             "all curves of one process must be drawn on the same embedding"
         )
@@ -110,7 +113,12 @@ def process_values(
         scope &= ~points_in_polygon(
             coordinates[region.properties.embedding_id], _ring(region)
         )
-    points = coordinates[curve_embeddings.pop()][scope]
+    if not curves:
+        values[scope] = 1.0 if included else np.nan
+        return values
+    curve_points = coordinates[curve_embeddings.pop()]
+    scope &= np.isfinite(curve_points).all(axis=1)
+    points = curve_points[scope]
     best = np.full(len(points), np.inf)
     selected = np.full(len(points), np.nan)
     for curve in curves:
@@ -153,7 +161,6 @@ class ProcessAnnotations:
 
     def __init__(self, project: EyckProject):
         self.project = project
-        self._coordinates: dict[str, np.ndarray] = {}
 
     @property
     def root(self) -> Path:
@@ -171,16 +178,7 @@ class ProcessAnnotations:
             raise ProjectError(str(exc)) from exc
 
     def coordinates(self, embedding_id: str) -> np.ndarray:
-        if embedding_id not in self._coordinates:
-            spec = next(
-                (e for e in self.project.spec.embeddings if e.id == embedding_id), None
-            )
-            if spec is None:
-                raise ProjectError(f"unknown embedding: {embedding_id}")
-            with self.project._adata() as data:
-                values = np.asarray(data.obsm[spec.obsm], dtype=float)[:, :2]
-            self._coordinates[embedding_id] = values
-        return self._coordinates[embedding_id]
+        return self.project.embedding_coordinates(embedding_id)
 
     def _set_ids(self) -> list[str]:
         if not self.root.is_dir():
@@ -234,7 +232,7 @@ class ProcessAnnotations:
                 for p in spec.processes
             ],
             annotation_sets=summaries,
-            embeddings=[e.id for e in spec.embeddings],
+            embeddings=self.project.views(),
             metadata_columns=list(spec.metadata_columns),
             overlay_columns=list(spec.overlay_columns),
         )
@@ -276,7 +274,7 @@ class ProcessAnnotations:
         return self._document(set_id, "empty", [])
 
     def _validate(self, set_id: str, features: list[ProcessFeature]) -> None:
-        embeddings = {e.id for e in self.project.spec.embeddings}
+        embeddings = {view.id for view in self.project.views()}
         seen: set[str] = set()
         for feature in features:
             properties = feature.properties

@@ -344,3 +344,23 @@ def test_supervisor_loop_restarts_only_when_requested():
 
     supervisor_loop(serve_once)
     assert generations == 2
+
+
+def test_view_files_appear_without_restart_and_cover_a_subset(tmp_path: Path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    manifest = write_project(tmp_path)
+    text = manifest.read_text(encoding="utf-8")
+    manifest.write_text(text.replace('expression_layer = "X"', 'expression_layer = "X"\nviews = "data/views"'), encoding="utf-8")
+    with TestClient(create_app([tmp_path])) as client:
+        assert [view["id"] for view in client.get("/api/v1/annotations/cells/processes").json()["embeddings"]] == ["umap"]
+        views = manifest.parent / "data" / "views"
+        views.mkdir()
+        table = pa.table({"observation_id": ["d3", "d1"], "x": [5.0, 1.0], "y": [6.0, 2.0]})
+        table = table.replace_schema_metadata({"eyck_view": json.dumps({"title": "Subset", "description": "d1 and d3"})})
+        pq.write_table(table, views / "subset.parquet")
+        index = client.get("/api/v1/annotations/cells/processes").json()
+        assert index["embeddings"][1] == {"id": "subset", "title": "Subset", "description": "d1 and d3", "observations": 2, "source": "view"}
+        points = client.get("/api/v1/annotations/cells/points", params={"embedding": "subset"}).json()
+        assert points["coordinates"] == [[1.0, 2.0], None, [5.0, 6.0]]
