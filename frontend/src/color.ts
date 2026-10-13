@@ -10,7 +10,17 @@ const CATEGORICAL = [
   [187, 85, 113],
   [98, 146, 71],
   [119, 108, 92],
-  [69, 149, 161]
+  [69, 149, 161],
+  [140, 182, 226],
+  [240, 166, 140],
+  [137, 199, 157],
+  [196, 166, 214],
+  [234, 200, 112],
+  [30, 60, 90],
+  [128, 45, 30],
+  [25, 85, 60],
+  [80, 40, 95],
+  [160, 160, 160]
 ] as const;
 
 export interface ColorLegendItem {
@@ -107,7 +117,7 @@ export function colorValues(values: Scalar[] | undefined, length: number, option
     };
   }
 
-  const categories = [...new Set(present.map(String))].sort((a, b) => a.localeCompare(b));
+  const categories = [...new Set(present.map(String))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
   const categoryColors = new Map(categories.map((category, index) => [
     category,
     CATEGORICAL[index % CATEGORICAL.length]
@@ -117,11 +127,10 @@ export function colorValues(values: Scalar[] | undefined, length: number, option
       ? [190, 194, 198]
       : categoryColors.get(String(value)) ?? CATEGORICAL[0]);
   });
-  const legend = categories.slice(0, 12).map((category) => ({
+  const legend = categories.map((category) => ({
     label: category,
     color: cssColor(categoryColors.get(category) ?? CATEGORICAL[0])
   }));
-  if (categories.length > 12) legend.push({ label: `+${categories.length - 12} more`, color: "#bec2c6" });
   return { colors, legend };
 }
 
@@ -163,10 +172,25 @@ export interface DisplayOptions {
   opacity: number;
 }
 
+/** What a legend needs to explain one plot's colours. */
+export type LegendScale =
+  | { kind: "uniform" }
+  | { kind: "categorical"; items: ColorLegendItem[] }
+  | { kind: "continuous"; min: number; max: number; stops: string[] }
+  | { kind: "blend"; first: { min: number; max: number }; second: { min: number; max: number } };
+
 export interface DisplayResult extends ColorResult {
   /** Draw order: missing values first, then increasing value, so high values are on top. */
   order: Uint32Array;
+  scale: LegendScale;
+  /** Whether any cell has no value; such cells are drawn faint. */
+  hasMissing: boolean;
 }
+
+/** Cells without a value are pale and mostly transparent, so a value of 0 stays distinguishable. */
+export const NO_VALUE_COLOR = "rgba(200, 204, 208, 0.35)";
+const NO_VALUE = [214, 217, 221] as const;
+const NO_VALUE_ALPHA = 0.22;
 
 function numericRange(values: Scalar[], upperPercentile: number): { min: number; max: number } | null {
   const numbers = values.filter((value): value is number => typeof value === "number");
@@ -188,8 +212,10 @@ function orderBy(keys: Float64Array): Uint32Array {
   return Uint32Array.from(keys.keys()).sort((a, b) => keys[a] - keys[b]);
 }
 
-function setOpacity(colors: Float32Array, opacity: number): void {
-  for (let index = 3; index < colors.length; index += 4) colors[index] = opacity;
+function setOpacity(colors: Float32Array, opacity: number, missing: Uint8Array): void {
+  for (let index = 0; index < missing.length; index += 1) {
+    colors[index * 4 + 3] = missing[index] ? opacity * NO_VALUE_ALPHA : opacity;
+  }
 }
 
 /** Colour one or two value channels for display; the second is blended in red. */
@@ -199,32 +225,50 @@ export function displayColors(
   length: number,
   options: DisplayOptions
 ): DisplayResult {
-  const identity = Uint32Array.from({ length }, (_, index) => index);
   const first = primary && primary.length === length ? primary : undefined;
   const second = secondary && secondary.length === length ? secondary : undefined;
   const firstRange = first ? numericRange(first, options.upperPercentile) : null;
   const secondRange = second ? numericRange(second, options.upperPercentile) : null;
-  if (!first || !firstRange) {
-    const result = colorValues(first, length);
-    setOpacity(result.colors, options.opacity);
-    return { ...result, order: identity };
-  }
+  const missing = new Uint8Array(length);
   const colors = new Float32Array(length * 4);
   const keys = new Float64Array(length);
+  if (!first || !firstRange) {
+    // Uniform or categorical colours.
+    const result = colorValues(first, length);
+    colors.set(result.colors);
+    first?.forEach((value, index) => {
+      if (value === null) {
+        missing[index] = 1;
+        keys[index] = -1;
+        writeColor(colors, index, NO_VALUE);
+      }
+    });
+    setOpacity(colors, options.opacity, missing);
+    const items = result.legend.filter((item) => item.label !== "Observations");
+    return {
+      colors,
+      legend: result.legend,
+      order: orderBy(keys),
+      scale: first ? { kind: "categorical", items } : { kind: "uniform" },
+      hasMissing: missing.some((value) => value === 1)
+    };
+  }
   for (let index = 0; index < length; index += 1) {
     const a = scaled(first[index], firstRange);
     const b = second && secondRange ? scaled(second[index], secondRange) : null;
     let rgb: readonly number[];
     if (second && secondRange) {
-      rgb = a === null && b === null ? MISSING : blendColor(a ?? 0, b ?? 0);
+      rgb = a === null && b === null ? NO_VALUE : blendColor(a ?? 0, b ?? 0);
       keys[index] = a === null && b === null ? -1 : Math.max(a ?? 0, b ?? 0);
+      missing[index] = a === null && b === null ? 1 : 0;
     } else {
-      rgb = a === null ? MISSING : paletteColor(options.palette, a);
+      rgb = a === null ? NO_VALUE : paletteColor(options.palette, a);
       keys[index] = a === null ? -1 : a;
+      missing[index] = a === null ? 1 : 0;
     }
     writeColor(colors, index, rgb);
   }
-  setOpacity(colors, options.opacity);
+  setOpacity(colors, options.opacity, missing);
   const label = (range: { min: number; max: number }, end: "min" | "max") =>
     end === "min" ? `${range.min.toPrecision(3)} or less` : `${range.max.toPrecision(3)} or more`;
   const legend = second && secondRange
@@ -240,5 +284,11 @@ export function displayColors(
         { label: label(firstRange, "min"), color: cssColor(paletteColor(options.palette, 0)) },
         { label: label(firstRange, "max"), color: cssColor(paletteColor(options.palette, 1)) }
       ];
-  return { colors, legend, order: orderBy(keys) };
+  const scale: LegendScale = second && secondRange
+    ? { kind: "blend", first: firstRange, second: secondRange }
+    : { kind: "continuous", min: firstRange.min, max: firstRange.max, stops: [0, 0.25, 0.5, 0.75, 1].map((t) => cssColor(paletteColor(options.palette, firstRange.max <= firstRange.min ? 1 : t))) };
+  return { colors, legend, order: orderBy(keys), scale, hasMissing: missing.some((value) => value === 1) };
 }
+
+/** Corner colours of the two-channel blend legend. */
+export const BLEND_CORNERS = { neither: cssColor(GREY), first: cssColor(BLUE), second: cssColor(RED), both: cssColor(PURPLE) };

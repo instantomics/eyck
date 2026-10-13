@@ -14,7 +14,7 @@ import {
   reviewProcessSet,
   searchFeatures
 } from "./api";
-import { displayColors, PALETTES, type DisplayOptions, type Palette } from "./color";
+import { BLEND_CORNERS, displayColors, NO_VALUE_COLOR, PALETTES, type DisplayOptions, type DisplayResult, type Palette } from "./color";
 import { Scatterplot, type DrawMode, type Projection, type SelectionMode, type ToScreen, type ViewState } from "./Scatterplot";
 import { dragWeights, insertVertex, isClosed, minVertices, moved, openVertices, smoothed, withVertices, type XY } from "./shapes";
 import type {
@@ -756,8 +756,40 @@ function PlotPanel({ position, pointScale, panel, view, points, active, processI
         interactive: tool === "edit"
       }}
     />}
-    <div className="panel-legend">{colors.legend.slice(0, 8).map((item) => <div key={item.label}><i style={{ background: item.color }} />{item.label}</div>)}<div><i style={{ background: "rgb(190, 194, 198)" }} />not applicable / missing</div></div>
+    <PlotLegend colors={colors} first={sourceTitle(panel.color, processId)} second={panel.blend && sourceTitle(panel.blend, processId)} />
   </section>;
+}
+
+function formatValue(value: number): string {
+  return Math.abs(value) >= 1000 || (Math.abs(value) < 0.01 && value !== 0) ? value.toExponential(1) : Number(value.toPrecision(3)).toString();
+}
+
+/** Explains one plot's colours: categories, a colour bar, or the two-channel blend, and cells without a value. */
+function PlotLegend({ colors, first, second }: { colors: DisplayResult; first: string; second: string | null }) {
+  const [open, setOpen] = useState(true);
+  const { scale } = colors;
+  if (scale.kind === "uniform") return null;
+  const noValue = colors.hasMissing && <div className="legend-row"><i className="no-value" style={{ background: NO_VALUE_COLOR }} />no value</div>;
+  return <div className={`panel-legend ${open ? "" : "closed"}`}>
+    <button type="button" className="legend-title" title={open ? "Hide legend" : "Show legend"} onClick={() => setOpen(!open)}>{scale.kind === "blend" ? "Blend" : first}<span>{open ? "-" : "+"}</span></button>
+    {open && scale.kind === "categorical" && <div className="legend-categories">{scale.items.map((item) => <div className="legend-row" key={item.label}><i style={{ background: item.color }} />{item.label}</div>)}</div>}
+    {open && scale.kind === "continuous" && <div className="legend-bar">
+      <div className="legend-gradient" style={{ background: `linear-gradient(to right, ${scale.stops.join(", ")})` }} />
+      <div className="legend-ticks">{scale.max > scale.min ? <><span>{formatValue(scale.min)} or less</span><span>{formatValue(scale.max)} or more</span></> : <span>{formatValue(scale.max)}</span>}</div>
+    </div>}
+    {open && scale.kind === "blend" && <div className="legend-blend">
+      <div className="legend-square">
+        <i style={{ background: BLEND_CORNERS.first }} /><i style={{ background: BLEND_CORNERS.both }} />
+        <i style={{ background: BLEND_CORNERS.neither }} /><i style={{ background: BLEND_CORNERS.second }} />
+      </div>
+      <div>
+        <div className="legend-row"><i style={{ background: BLEND_CORNERS.first }} />{first} (up to {formatValue(scale.first.max)})</div>
+        <div className="legend-row"><i style={{ background: BLEND_CORNERS.second }} />{second} (up to {formatValue(scale.second.max)})</div>
+        <div className="legend-row"><i style={{ background: BLEND_CORNERS.both }} />both high</div>
+      </div>
+    </div>}
+    {open && noValue}
+  </div>;
 }
 
 function publicPoints(projectId: string, embeddingId: string): string {
