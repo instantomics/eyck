@@ -34,6 +34,10 @@ export interface ScatterplotProps {
   onSingleSelect: (index: number) => void;
   onLasso: (indices: number[], mode: SelectionMode, polygon: [number, number][]) => void;
   onClearSelection: () => void;
+  /** Diameter of unselected points in pixels; defaults to 4. */
+  pointSize?: number;
+  /** Observation indices in drawing order, so later ones are drawn on top. */
+  drawOrder?: Uint32Array;
   /** Freehand drawing replaces lasso selection; points are in embedding coordinates. */
   drawing?: {
     mode: DrawMode | null;
@@ -68,6 +72,8 @@ export function Scatterplot({
   onSingleSelect,
   onLasso,
   onClearSelection,
+  pointSize = 4,
+  drawOrder,
   drawing
 }: ScatterplotProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -75,6 +81,9 @@ export function Scatterplot({
   const colorBufferRef = useRef<Buffer | null>(null);
   const selectionBufferRef = useRef<{ subdata(data: Float32Array): void } | null>(null);
   const focusBufferRef = useRef<{ subdata(data: Float32Array): void } | null>(null);
+  const elementsRef = useRef<((data: Uint32Array) => void) | null>(null);
+  const pointSizeRef = useRef(pointSize);
+  pointSizeRef.current = pointSize;
   const gestureRef = useRef<Gesture | null>(null);
   const [dimensions, setDimensions] = useState({ width: 1, height: 1 });
   const [view, setView] = useState<ViewState>({ scale: 1, translate: [0, 0] });
@@ -138,7 +147,7 @@ export function Scatterplot({
     if (!canvas || normalized.length === 0) return;
     let regl: Regl;
     try {
-      regl = createREGL({ canvas, attributes: { antialias: false, alpha: false } });
+      regl = createREGL({ canvas, attributes: { antialias: false, alpha: false }, optionalExtensions: ["OES_element_index_uint"] });
     } catch (error) {
       setPlotError(error instanceof Error ? error.message : "WebGL is unavailable");
       return;
@@ -153,11 +162,16 @@ export function Scatterplot({
     colorBufferRef.current = colorBuffer;
     selectionBufferRef.current = selectionBuffer;
     focusBufferRef.current = focusBuffer;
+    const ordered = regl.hasExtension("OES_element_index_uint")
+      ? regl.elements({ data: Uint32Array.from(normalized.keys()), type: "uint32", primitive: "points" })
+      : null;
+    elementsRef.current = ordered && ((data) => ordered({ data, type: "uint32", primitive: "points" }));
 
     interface DrawProps {
       scale: number;
       translate: [number, number];
       onlySelected: number;
+      pointSize: number;
     }
 
     const drawPoints = regl({
@@ -169,12 +183,13 @@ export function Scatterplot({
         attribute float focused;
         uniform float scale;
         uniform vec2 translate;
+        uniform float pointSize;
         varying vec4 color;
         varying float isSelected;
         varying float isFocused;
         void main() {
           gl_Position = vec4(position * scale + translate, 0.0, 1.0);
-          gl_PointSize = selected > 0.5 ? 10.0 : (focused > 0.5 ? 7.0 : 4.0);
+          gl_PointSize = selected > 0.5 ? max(10.0, pointSize + 4.0) : (focused > 0.5 ? pointSize + 3.0 : pointSize);
           color = pointColor;
           isSelected = selected;
           isFocused = focused;
@@ -208,10 +223,10 @@ export function Scatterplot({
       uniforms: {
         scale: regl.prop<DrawProps, "scale">("scale"),
         translate: regl.prop<DrawProps, "translate">("translate"),
-        onlySelected: regl.prop<DrawProps, "onlySelected">("onlySelected")
+        onlySelected: regl.prop<DrawProps, "onlySelected">("onlySelected"),
+        pointSize: regl.prop<DrawProps, "pointSize">("pointSize")
       },
-      count: normalized.length,
-      primitive: "points",
+      ...(ordered ? { elements: ordered } : { count: normalized.length, primitive: "points" as const }),
       depth: { enable: false },
       blend: {
         enable: true,
@@ -223,8 +238,8 @@ export function Scatterplot({
       try {
         regl.poll();
         regl.clear({ color: [0.985, 0.988, 0.99, 1], depth: 1 });
-        drawPoints({ ...viewRef.current, onlySelected: 0 });
-        drawPoints({ ...viewRef.current, onlySelected: 1 });
+        drawPoints({ ...viewRef.current, onlySelected: 0, pointSize: pointSizeRef.current });
+        drawPoints({ ...viewRef.current, onlySelected: 1, pointSize: pointSizeRef.current });
       } catch (error) {
         setPlotError(error instanceof Error ? error.message : "The plot renderer failed");
       }
@@ -249,6 +264,7 @@ export function Scatterplot({
       colorBufferRef.current = null;
       selectionBufferRef.current = null;
       focusBufferRef.current = null;
+      elementsRef.current = null;
       regl.destroy();
     };
   }, [normalized]);
@@ -257,6 +273,16 @@ export function Scatterplot({
     colorBufferRef.current?.(safeColors);
     renderRef.current?.();
   }, [safeColors]);
+
+  useEffect(() => {
+    if (drawOrder && drawOrder.length === normalized.length) elementsRef.current?.(drawOrder);
+    else elementsRef.current?.(Uint32Array.from(normalized.keys()));
+    renderRef.current?.();
+  }, [drawOrder, normalized]);
+
+  useEffect(() => {
+    renderRef.current?.();
+  }, [pointSize]);
 
   useEffect(() => {
     const selection = new Float32Array(normalized.length);

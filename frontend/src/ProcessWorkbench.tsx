@@ -14,7 +14,7 @@ import {
   reviewProcessSet,
   searchFeatures
 } from "./api";
-import { colorValues } from "./color";
+import { displayColors, PALETTES, type DisplayOptions, type Palette } from "./color";
 import { Scatterplot, type DrawMode, type ToScreen } from "./Scatterplot";
 import type {
   FeatureDescriptor,
@@ -28,14 +28,24 @@ import type {
 import { Badge, Button, Field, Loading, Notice, Select } from "./ui";
 
 type Tool = "pan" | "curve" | "include" | "exclude";
+/** A process colour source with no ID follows the process being drawn. */
 type ColorSource =
-  | { kind: "process" }
+  | { kind: "process"; process: string | null }
   | { kind: "column"; column: string }
   | { kind: "gene"; feature: FeatureDescriptor };
 type SaveStatus = "saved" | "dirty" | "saving" | "conflict" | "error";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const NO_INDICES = new Set<number>();
+const DEFAULT_DISPLAY: DisplayOptions & { pointSize: number } = { palette: "grey_blue", upperPercentile: 99, opacity: 0.82, pointSize: 4 };
+
+function readDisplay(): DisplayOptions & { pointSize: number } {
+  try {
+    return { ...DEFAULT_DISPLAY, ...JSON.parse(readSetting("eyck-process-display", "{}")) };
+  } catch {
+    return DEFAULT_DISPLAY;
+  }
+}
 
 function readSetting(key: string, fallback: string): string {
   try {
@@ -106,8 +116,9 @@ function ProcessEditor({ project, index, onIndex }: { project: ProjectDetail; in
   const [newProcess, setNewProcess] = useState("");
   const [processId, setProcessId] = useState(index.processes[0]?.id ?? "");
   const [tool, setTool] = useState<Tool>("pan");
-  const [colorSource, setColorSource] = useState<ColorSource>({ kind: "process" });
-  const [colorValuesState, setColorValuesState] = useState<Scalar[] | null>(null);
+  const [colorSource, setColorSource] = useState<ColorSource>({ kind: "process", process: null });
+  const [secondSource, setSecondSource] = useState<ColorSource | null>(null);
+  const [display, setDisplay] = useState(readDisplay);
   const [processValues, setProcessValues] = useState<(number | null)[] | null>(null);
   const [assigned, setAssigned] = useState<number | null>(null);
   const [previewError, setPreviewError] = useState("");
@@ -210,22 +221,25 @@ function ProcessEditor({ project, index, onIndex }: { project: ProjectDetail; in
     return () => { cancelled = true; window.clearTimeout(timer); };
   }, [deferredProcessFeatures, processId, project.csrf_token, projectId]);
 
-  useEffect(() => {
-    if (colorSource.kind === "process") return;
-    const controller = new AbortController();
-    setColorValuesState(null);
-    const load = colorSource.kind === "column"
-      ? getObservationColumn(projectId, colorSource.column, controller.signal).then((result) => result.values)
-      : getFeatureValues(project.features_url, colorSource.feature.feature_index, controller.signal).then((result) => result.values);
-    load.then(setColorValuesState).catch((caught: unknown) => {
-      if (!controller.signal.aborted) setMessage(caught instanceof Error ? caught.message : "Could not load colour values");
-    });
-    return () => controller.abort();
-  }, [colorSource, project.features_url, projectId]);
+  const loadValues = useCallback((source: ColorSource, signal: AbortSignal): Promise<Scalar[]> => {
+    if (source.kind === "column") return getObservationColumn(projectId, source.column, signal).then((result) => result.values);
+    if (source.kind === "gene") return getFeatureValues(project.features_url, source.feature.feature_index, signal).then((result) => result.values);
+    const id = source.process ?? processId;
+    const drawn = featuresRef.current.filter((item) => item.properties.process_id === id);
+    if (!drawn.some((item) => item.properties.role === "curve")) return Promise.resolve([]);
+    return previewProcess(projectId, project.csrf_token, id, drawn).then((result) => result.values);
+  }, [processId, project.csrf_token, project.features_url, projectId]);
+  const firstValues = useSourceValues(colorSource, colorSource.kind === "process" && colorSource.process === null ? processValues : undefined, loadValues, features, setMessage);
+  const secondValues = useSourceValues(secondSource, undefined, loadValues, features, setMessage);
+  const updateDisplay = (patch: Partial<typeof display>) => setDisplay((current) => {
+    const next = { ...current, ...patch };
+    writeSetting("eyck-process-display", JSON.stringify(next));
+    return next;
+  });
 
-  const shownValues: Scalar[] | null = colorSource.kind === "process" ? processValues : colorValuesState;
-  const colors = useMemo(() => colorValues(shownValues ?? undefined, points?.observation_ids.length ?? 0, { contrast: true }), [points, shownValues]);
-  const colorTitle = colorSource.kind === "process" ? `Process / ${processId}` : colorSource.kind === "column" ? colorSource.column : `Gene / ${colorSource.feature.feature_symbol ?? colorSource.feature.feature_id}`;
+  const nPoints = points?.observation_ids.length ?? 0;
+  const colors = useMemo(() => displayColors(firstValues ?? undefined, secondSource ? secondValues ?? undefined : undefined, nPoints, display), [display, firstValues, nPoints, secondSource, secondValues]);
+  const colorTitle = [colorSource, secondSource].filter((item): item is ColorSource => item !== null).map((item) => sourceTitle(item, processId)).join(" + ");
 
   const processIds = useMemo(() => {
     const declared = index.processes.map((item) => item.id);
@@ -367,6 +381,8 @@ function ProcessEditor({ project, index, onIndex }: { project: ProjectDetail; in
           onSingleSelect={() => undefined}
           onLasso={() => undefined}
           onClearSelection={() => undefined}
+          pointSize={display.pointSize}
+          drawOrder={colors.order}
           drawing={{ mode: tool === "pan" ? null : (tool === "curve" ? "curve" : "region") as DrawMode, onDraw, renderOverlay, hint }}
         />}
       </section>
@@ -374,7 +390,9 @@ function ProcessEditor({ project, index, onIndex }: { project: ProjectDetail; in
         <div className="control-section">
           <Field label="Embedding"><Select value={embeddingId} onChange={(event) => setEmbeddingId(event.target.value)}>{index.embeddings.map((id) => <option key={id} value={id}>{id}</option>)}</Select></Field>
         </div>
-        <ColorControls index={index} featuresUrl={project.features_url} source={colorSource} onSource={setColorSource} />
+        <ColorControls label="Colour by" index={index} processIds={processIds} featuresUrl={project.features_url} source={colorSource} onSource={(source) => { if (source) setColorSource(source); }} />
+        <ColorControls label="Blend with (red)" index={index} processIds={processIds} featuresUrl={project.features_url} source={secondSource} onSource={setSecondSource} />
+        <DisplayControls display={display} blended={secondSource !== null} onChange={updateDisplay} />
         <div className="compact-legend"><span>{colorTitle}</span>{colors.legend.slice(0, 10).map((item) => <div key={item.label}><i style={{ background: item.color }} />{item.label}</div>)}<div><i style={{ background: "rgb(190, 194, 198)" }} />not applicable / missing</div></div>
       </aside>
     </div>
@@ -385,8 +403,46 @@ function publicPoints(projectId: string, embeddingId: string): string {
   return `${basePath}/api/v1/annotations/${encodeURIComponent(projectId)}/points?embedding=${encodeURIComponent(embeddingId)}`;
 }
 
-function ColorControls({ index, featuresUrl, source, onSource }: { index: ProcessIndex; featuresUrl: string; source: ColorSource; onSource: (source: ColorSource) => void }) {
+function sourceTitle(source: ColorSource, currentProcess: string): string {
+  if (source.kind === "process") return `Process / ${source.process ?? currentProcess}`;
+  if (source.kind === "column") return source.column;
+  return `Gene / ${source.feature.feature_symbol ?? source.feature.feature_id}`;
+}
+
+/** Values of one colour source, reloaded when it or the drawings change. */
+function useSourceValues(
+  source: ColorSource | null,
+  given: Scalar[] | null | undefined,
+  load: (source: ColorSource, signal: AbortSignal) => Promise<Scalar[]>,
+  features: ProcessFeature[],
+  onError: (message: string) => void
+): Scalar[] | null {
+  const [values, setValues] = useState<Scalar[] | null>(null);
+  const dependsOnDrawings = source?.kind === "process";
+  const drawings = useDeferredValue(dependsOnDrawings ? features : null);
+  useEffect(() => {
+    if (!source || given !== undefined) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      load(source, controller.signal).then((loaded) => { if (!controller.signal.aborted) setValues(loaded); }).catch((caught: unknown) => {
+        if (!controller.signal.aborted) onError(caught instanceof Error ? caught.message : "Could not load colour values");
+      });
+    }, dependsOnDrawings ? 200 : 0);
+    return () => { controller.abort(); window.clearTimeout(timer); };
+  }, [dependsOnDrawings, drawings, given, load, onError, source]);
+  if (!source) return null;
+  return given !== undefined ? given : values;
+}
+
+function sourceKey(source: ColorSource | null): string {
+  if (source === null) return "none";
+  if (source.kind === "process") return source.process === null ? "process" : `process:${source.process}`;
+  return source.kind === "column" ? `column:${source.column}` : "gene";
+}
+
+function ColorControls({ label, index, processIds, featuresUrl, source, onSource }: { label: string; index: ProcessIndex; processIds: string[]; featuresUrl: string; source: ColorSource | null; onSource: (source: ColorSource | null) => void }) {
   const columns = [...index.metadata_columns, ...index.overlay_columns];
+  const optional = label !== "Colour by";
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
   const [hits, setHits] = useState<FeatureDescriptor[]>([]);
@@ -399,18 +455,33 @@ function ColorControls({ index, featuresUrl, source, onSource }: { index: Proces
     return () => { window.clearTimeout(timer); controller.abort(); };
   }, [deferredQuery, featuresUrl]);
   return <div className="control-section">
-    <Field label="Colour by">
-      <Select aria-label="Colour by" value={source.kind === "process" ? "process" : source.kind === "column" ? `column:${source.column}` : "gene"} onChange={(event) => {
+    <Field label={label}>
+      <Select aria-label={label} value={sourceKey(source)} onChange={(event) => {
         const value = event.target.value;
-        if (value === "process") onSource({ kind: "process" });
+        if (value === "none") onSource(null);
+        else if (value === "process") onSource({ kind: "process", process: null });
+        else if (value.startsWith("process:")) onSource({ kind: "process", process: value.slice(8) });
         else if (value.startsWith("column:")) onSource({ kind: "column", column: value.slice(7) });
       }}>
+        {optional && <option value="none">Nothing</option>}
         <option value="process">Current process values</option>
-        {source.kind === "gene" && <option value="gene">Gene / {source.feature.feature_symbol ?? source.feature.feature_id}</option>}
+        {source?.kind === "gene" && <option value="gene">Gene / {source.feature.feature_symbol ?? source.feature.feature_id}</option>}
+        <optgroup label="Drawn processes">{processIds.map((id) => <option key={id} value={`process:${id}`}>{id}</option>)}</optgroup>
         <optgroup label="Observation columns">{columns.map((column) => <option key={column} value={`column:${column}`}>{column}</option>)}</optgroup>
       </Select>
     </Field>
-    <Field label="Gene"><input className="pt-input" aria-label="Gene search" placeholder="Symbol" value={query} onChange={(event) => setQuery(event.target.value)} /></Field>
+    <Field label="Gene"><input className="pt-input" aria-label={`${label} gene search`} placeholder="Symbol" value={query} onChange={(event) => setQuery(event.target.value)} /></Field>
     {hits.length > 0 && <div className="feature-results">{hits.map((hit) => <button type="button" key={hit.feature_index} onClick={() => { onSource({ kind: "gene", feature: hit }); setQuery(""); setHits([]); }}><strong>{hit.feature_symbol ?? hit.feature_id}</strong>{hit.feature_symbol && <span>{hit.feature_id}</span>}</button>)}</div>}
+  </div>;
+}
+
+function DisplayControls({ display, blended, onChange }: { display: DisplayOptions & { pointSize: number }; blended: boolean; onChange: (patch: Partial<DisplayOptions & { pointSize: number }>) => void }) {
+  return <div className="control-section">
+    <Field label="Palette" hint={blended ? "Blending: first channel blue, second red, both purple." : undefined}>
+      <Select aria-label="Palette" disabled={blended} value={display.palette} onChange={(event) => onChange({ palette: event.target.value as Palette })}>{PALETTES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</Select>
+    </Field>
+    <Field label={`Point size ${display.pointSize}px`}><input type="range" min={1} max={16} step={0.5} value={display.pointSize} onChange={(event) => onChange({ pointSize: Number(event.target.value) })} /></Field>
+    <Field label={`Opacity ${Math.round(display.opacity * 100)}%`}><input type="range" min={0.1} max={1} step={0.05} value={display.opacity} onChange={(event) => onChange({ opacity: Number(event.target.value) })} /></Field>
+    <Field label={`Colour cap at percentile ${display.upperPercentile}`} hint="Lower caps saturate more cells."><input type="range" min={80} max={100} step={0.5} value={display.upperPercentile} onChange={(event) => onChange({ upperPercentile: Number(event.target.value) })} /></Field>
   </div>;
 }

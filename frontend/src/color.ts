@@ -124,3 +124,117 @@ export function colorValues(values: Scalar[] | undefined, length: number, option
   if (categories.length > 12) legend.push({ label: `+${categories.length - 12} more`, color: "#bec2c6" });
   return { colors, legend };
 }
+
+export type Palette = "viridis" | "grey_blue" | "grey_red" | "grey_purple";
+
+export const PALETTES: { id: Palette; label: string }[] = [
+  { id: "grey_blue", label: "Grey to blue" },
+  { id: "grey_red", label: "Grey to red" },
+  { id: "grey_purple", label: "Grey to purple" },
+  { id: "viridis", label: "Viridis" }
+];
+
+const GREY = [205, 208, 211] as const;
+const BLUE = [31, 88, 214] as const;
+const RED = [214, 39, 40] as const;
+const PURPLE = [128, 24, 156] as const;
+const MISSING = [190, 194, 198] as const;
+
+function mix(from: readonly number[], to: readonly number[], t: number): number[] {
+  return from.map((value, channel) => Math.round(value + (to[channel] - value) * t));
+}
+
+function paletteColor(palette: Palette, t: number): number[] {
+  if (palette === "viridis") return viridis(t);
+  return mix(GREY, palette === "grey_blue" ? BLUE : palette === "grey_red" ? RED : PURPLE, t);
+}
+
+/** Grey with no signal, blue for the first value, red for the second, purple for both. */
+function blendColor(a: number, b: number): number[] {
+  return GREY.map((grey, channel) => Math.round(
+    grey * (1 - a) * (1 - b) + BLUE[channel] * a * (1 - b) + RED[channel] * (1 - a) * b + PURPLE[channel] * a * b
+  ));
+}
+
+export interface DisplayOptions {
+  palette: Palette;
+  /** Values at or above this percentile take the strongest colour. */
+  upperPercentile: number;
+  opacity: number;
+}
+
+export interface DisplayResult extends ColorResult {
+  /** Draw order: missing values first, then increasing value, so high values are on top. */
+  order: Uint32Array;
+}
+
+function numericRange(values: Scalar[], upperPercentile: number): { min: number; max: number } | null {
+  const numbers = values.filter((value): value is number => typeof value === "number");
+  if (numbers.length === 0 || numbers.length !== values.filter((value) => value !== null).length) return null;
+  const sorted = Float64Array.from(numbers).sort();
+  const min = sorted[Math.floor((sorted.length - 1) * 0.01)];
+  const max = sorted[Math.round((sorted.length - 1) * upperPercentile / 100)];
+  return { min, max: max > min ? max : sorted[sorted.length - 1] };
+}
+
+function scaled(value: Scalar, range: { min: number; max: number }): number | null {
+  if (typeof value !== "number") return null;
+  return Math.max(0, Math.min(1, (value - range.min) / (range.max - range.min || 1)));
+}
+
+function orderBy(keys: Float64Array): Uint32Array {
+  return Uint32Array.from(keys.keys()).sort((a, b) => keys[a] - keys[b]);
+}
+
+function setOpacity(colors: Float32Array, opacity: number): void {
+  for (let index = 3; index < colors.length; index += 4) colors[index] = opacity;
+}
+
+/** Colour one or two value channels for display; the second is blended in red. */
+export function displayColors(
+  primary: Scalar[] | undefined,
+  secondary: Scalar[] | undefined,
+  length: number,
+  options: DisplayOptions
+): DisplayResult {
+  const identity = Uint32Array.from({ length }, (_, index) => index);
+  const first = primary && primary.length === length ? primary : undefined;
+  const second = secondary && secondary.length === length ? secondary : undefined;
+  const firstRange = first ? numericRange(first, options.upperPercentile) : null;
+  const secondRange = second ? numericRange(second, options.upperPercentile) : null;
+  if (!first || !firstRange) {
+    const result = colorValues(first, length);
+    setOpacity(result.colors, options.opacity);
+    return { ...result, order: identity };
+  }
+  const colors = new Float32Array(length * 4);
+  const keys = new Float64Array(length);
+  for (let index = 0; index < length; index += 1) {
+    const a = scaled(first[index], firstRange);
+    const b = second && secondRange ? scaled(second[index], secondRange) : null;
+    let rgb: readonly number[];
+    if (second && secondRange) {
+      rgb = a === null && b === null ? MISSING : blendColor(a ?? 0, b ?? 0);
+      keys[index] = a === null && b === null ? -1 : Math.max(a ?? 0, b ?? 0);
+    } else {
+      rgb = a === null ? MISSING : paletteColor(options.palette, a);
+      keys[index] = a === null ? -1 : a;
+    }
+    writeColor(colors, index, rgb);
+  }
+  setOpacity(colors, options.opacity);
+  const label = (range: { min: number; max: number }, end: "min" | "max") =>
+    end === "min" ? `${range.min.toPrecision(3)} or less` : `${range.max.toPrecision(3)} or more`;
+  const legend = second && secondRange
+    ? [
+      { label: "neither", color: cssColor(GREY) },
+      { label: `first ${label(firstRange, "max")}`, color: cssColor(BLUE) },
+      { label: `second ${label(secondRange, "max")}`, color: cssColor(RED) },
+      { label: "both", color: cssColor(PURPLE) }
+    ]
+    : [
+      { label: label(firstRange, "min"), color: cssColor(paletteColor(options.palette, 0)) },
+      { label: label(firstRange, "max"), color: cssColor(paletteColor(options.palette, 1)) }
+    ];
+  return { colors, legend, order: orderBy(keys) };
+}
