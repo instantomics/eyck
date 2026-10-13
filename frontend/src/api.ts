@@ -22,6 +22,7 @@ import type {
   ProcessExportResponse,
   ProcessFeature,
   ProcessIndex,
+  ProcessPart,
   ProcessValues,
   ProjectDetail,
   ProjectIndex,
@@ -328,18 +329,20 @@ export function putProcessSet(
   setId: string,
   revision: string,
   csrfToken: string,
+  parts: ProcessPart[],
   features: ProcessFeature[]
 ): Promise<ProcessDocument> {
-  return mutate(projectEndpoint(projectId, `/processes/sets/${encodeURIComponent(setId)}`), "PUT", csrfToken, { features }, revision);
+  return mutate(projectEndpoint(projectId, `/processes/sets/${encodeURIComponent(setId)}`), "PUT", csrfToken, { parts, features }, revision);
 }
 
 export function previewProcess(
   projectId: string,
   csrfToken: string,
   processId: string,
+  parts: ProcessPart[],
   features: ProcessFeature[]
 ): Promise<ProcessValues> {
-  return mutate(projectEndpoint(projectId, "/processes/preview"), "POST", csrfToken, { process_id: processId, features });
+  return mutate(projectEndpoint(projectId, "/processes/preview"), "POST", csrfToken, { process_id: processId, parts, features });
 }
 
 export function exportProcessSet(

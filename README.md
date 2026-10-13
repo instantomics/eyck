@@ -55,29 +55,39 @@ declarations.
 ## Process drawing
 
 `/annotations/<project>/processes` draws continuous processes that co-occur in
-one population. A process is one or more directed curves on one declared
-embedding; each curve runs from `value_start` (default 0, where drawing began)
-to `value_end` (default 1). Optional include and exclude regions, on any
-declared embedding or view, set the scope. A cell in scope takes the arc-length
-position of its projection onto the nearest curve; every other cell is not
-applicable. A process drawn with include regions only marks a subset (value 1),
-so cells chosen on one view, including a view of a subpopulation, can be
-coloured on every other view. Undeclared process IDs may be added while drawing.
+one population. A process is an ordered list of parts, and each cell belongs to
+the first part whose area holds it: inside any of the part's include regions
+(every cell when it has none) and outside its exclude regions. Regions may lie
+on any declared embedding or view and may have holes. A part has a status:
+
+- *values*: a cell takes the arc-length position of its projection onto the
+  part's nearest curve, so separate branches of one process project only onto
+  their own curves. Each curve runs from `value_start` (default 0, where drawing
+  began) to `value_end` (default 1). A value part with regions only marks a
+  subset (value 1), so cells chosen on one view, including a view of a
+  subpopulation, can be coloured on every other view.
+- *unknown*: the process is active but its value is not known.
+- *absent*: the process does not exist there, as in every cell no part holds.
+
+Reordering parts sets which one wins where they overlap; parts can be merged,
+and drawings moved between them. Undeclared process IDs may be added while
+drawing.
 
 The page shows one, two, four, or one large and four small plots, each with its
 own embedding and colouring, so several genes or views can be compared while
 drawing; plots of one embedding can share their zoom. Drawings can be selected
 and reshaped (points dragged with their neighbours, added, removed, smoothed, or
-the whole drawing moved) with undo, and cells lassoed in one plot are
-highlighted in all.
+the whole drawing moved) with undo, regions of one part merged, and regions cut
+out of another, and cells lassoed in one plot are highlighted in all.
 
 Drawings are GeoJSON in embedding coordinates, kept per annotation set so that
-independent sets can be compared. Each feature records the process, embedding,
-annotator, set, timestamps, and draft or reviewed status. The autosaved draft
-and the reviewed copy live under `<output>/processes/<set>/`. Export writes
-`values.parquet` there (one row per observation, one nullable column per
-process) with an `export.json` that records the drawing revision and the review
-status of every process.
+independent sets can be compared, with the ordered parts beside the features.
+Each feature records the process, part, embedding, annotator, set, timestamps,
+and draft or reviewed status. The autosaved draft and the reviewed copy live
+under `<output>/processes/<set>/`. Export writes `values.parquet` there (one row
+per observation and, per process, a nullable value column and a
+`<process>.status` column) with an `export.json` that records the drawing
+revision and the review status of every process.
 
 ## Annotated matrix exchange
 

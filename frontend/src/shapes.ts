@@ -6,7 +6,7 @@ export function isClosed(feature: ProcessFeature): boolean {
   return feature.geometry.type === "Polygon";
 }
 
-/** Editable vertices: a curve's points, or a region's ring without its closing point. */
+/** Editable vertices: a curve's points, or a region's outer ring without its closing point. */
 export function openVertices(feature: ProcessFeature): XY[] {
   return feature.geometry.type === "LineString" ? feature.geometry.coordinates : feature.geometry.coordinates[0].slice(0, -1);
 }
@@ -16,7 +16,18 @@ export function withVertices(feature: ProcessFeature, vertices: XY[]): ProcessFe
     ...feature,
     geometry: feature.geometry.type === "LineString"
       ? { type: "LineString", coordinates: vertices }
-      : { type: "Polygon", coordinates: [[...vertices, vertices[0]]] }
+      : { type: "Polygon", coordinates: [[...vertices, vertices[0]], ...feature.geometry.coordinates.slice(1)] }
+  };
+}
+
+/** The whole drawing shifted, holes included. */
+export function translated(feature: ProcessFeature, delta: XY): ProcessFeature {
+  const shift = (points: XY[]): XY[] => points.map(([x, y]) => [x + delta[0], y + delta[1]]);
+  return {
+    ...feature,
+    geometry: feature.geometry.type === "LineString"
+      ? { type: "LineString", coordinates: shift(feature.geometry.coordinates) }
+      : { type: "Polygon", coordinates: feature.geometry.coordinates.map(shift) }
   };
 }
 

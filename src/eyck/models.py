@@ -558,8 +558,22 @@ class ProcessGeometry(StrictModel):
     coordinates: list[tuple[float, float]] | list[list[tuple[float, float]]]
 
 
+ProcessStatus = Literal["value", "unknown", "absent"]
+
+
+class ProcessPart(StrictModel):
+    """One area of a process: its cells take a drawn value, an unknown value, or
+    are marked absent. The order of a process's parts is their priority."""
+
+    id: str
+    process_id: str
+    status: ProcessStatus
+    name: str = ""
+
+
 class ProcessFeatureProperties(StrictModel):
     process_id: str
+    part_id: str
     role: Literal["curve", "region"]
     embedding_id: str
     annotator: str = Field(min_length=1)
@@ -585,27 +599,32 @@ class ProcessDocument(StrictModel):
     """GeoJSON FeatureCollection of process drawings in embedding coordinates."""
 
     type: Literal["FeatureCollection"] = "FeatureCollection"
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     project_id: str
     annotation_set: str
     revision: str
     origin: Literal["draft", "reviewed", "empty"]
+    parts: list[ProcessPart]
     features: list[ProcessFeature]
 
 
 class ProcessDraftPut(StrictModel):
+    parts: list[ProcessPart]
     features: list[ProcessFeature]
 
 
 class ProcessPreviewRequest(StrictModel):
     process_id: str
+    parts: list[ProcessPart]
     features: list[ProcessFeature]
 
 
 class ProcessValues(StrictModel):
     process_id: str
     values: list[float | None]
+    statuses: list[ProcessStatus]
     assigned: int
+    unknown: int
 
 
 class ProcessReviewRequest(StrictModel):

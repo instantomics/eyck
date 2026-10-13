@@ -1,13 +1,19 @@
 """Hand-drawn continuous processes on cell embeddings.
 
-A process is drawn as one or more directed curves in the coordinates of one
-embedding. Each curve maps its arc length linearly from ``value_start`` (where
-drawing began) to ``value_end``. Optional regions, possibly on other embeddings,
-restrict which cells receive a value: a cell is in scope when it lies inside any
-include region (or when there are none) and inside no exclude region. Every cell
-in scope takes the value of its orthogonal projection onto the nearest curve;
-all other cells are not applicable (NaN). A process drawn with include regions
-but no curve marks a subset of cells: every cell in scope takes the value 1.
+A process is drawn as an ordered list of parts. A part's area is the cells
+inside any of its include regions (every cell when it has none) and inside none
+of its exclude regions; regions may lie on any embedding. Each cell belongs to
+the first part, in list order, whose area holds it, and takes that part's
+status:
+
+- ``value``: the cell takes the position of its orthogonal projection onto the
+  nearest curve of the part, each curve mapping its arc length linearly from
+  ``value_start`` (where drawing began) to ``value_end``. A value part without
+  curves marks a subset: its cells take the value 1.
+- ``unknown``: the process is active in the cell but its value is not known.
+- ``absent``: the process does not exist in the cell, as for every cell that no
+  part holds.
+
 Cells outside a view that embeds only a subpopulation lie in no region of that
 view and cannot project onto its curves.
 
@@ -35,6 +41,7 @@ from .models import (
     ProcessExportResponse,
     ProcessFeature,
     ProcessIndex,
+    ProcessPart,
     ProcessReviewRequest,
     ProcessSetProgress,
     ProcessSetSummary,
@@ -73,52 +80,75 @@ def project_onto_polyline(
     return distance, fraction
 
 
-def points_in_polygon(points: np.ndarray, ring: np.ndarray) -> np.ndarray:
-    """Even-odd rule containment of points in one closed ring."""
+def points_in_polygon(points: np.ndarray, rings: list[np.ndarray]) -> np.ndarray:
+    """Even-odd rule containment of points in a polygon; inner rings are holes."""
     inside = np.zeros(len(points), dtype=bool)
     x, y = points[:, 0], points[:, 1]
-    following = np.roll(ring, -1, axis=0)
-    for (x1, y1), (x2, y2) in zip(ring, following, strict=True):
-        if y1 == y2:
-            continue
-        crosses = (y1 > y) != (y2 > y)
-        inside ^= crosses & (x < x1 + (y - y1) * (x2 - x1) / (y2 - y1))
+    for ring in rings:
+        following = np.roll(ring, -1, axis=0)
+        for (x1, y1), (x2, y2) in zip(ring, following, strict=True):
+            if y1 == y2:
+                continue
+            crosses = (y1 > y) != (y2 > y)
+            inside ^= crosses & (x < x1 + (y - y1) * (x2 - x1) / (y2 - y1))
     return inside
 
 
 def process_values(
+    parts: list[ProcessPart],
+    features: list[ProcessFeature],
+    coordinates: dict[str, np.ndarray],
+    n_obs: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Values (NaN unless the status is value) and statuses of one process."""
+    values = np.full(n_obs, np.nan)
+    statuses = np.full(n_obs, "absent", dtype=object)
+    decided = np.zeros(n_obs, dtype=bool)
+    for part in parts:
+        members = [item for item in features if item.properties.part_id == part.id]
+        if not members:
+            continue
+        area = _area(members, coordinates, n_obs) & ~decided
+        curves = [item for item in members if item.properties.role == "curve"]
+        if part.status == "value" and curves:
+            embeddings = {item.properties.embedding_id for item in curves}
+            if len(embeddings) > 1:
+                raise ValueError(
+                    f"curves of part {part.id} span several embeddings: {sorted(embeddings)}"
+                )
+            curve_points = coordinates[embeddings.pop()]
+            area &= np.isfinite(curve_points).all(axis=1)
+            values[area] = _nearest_curve_values(curve_points[area], curves)
+        elif part.status == "value":
+            values[area] = 1.0
+        statuses[area] = part.status
+        decided |= area
+    return values, statuses
+
+
+def _area(
     features: list[ProcessFeature], coordinates: dict[str, np.ndarray], n_obs: int
 ) -> np.ndarray:
-    """Project cells onto the curves of one process; NaN outside its scope."""
-    curves = [item for item in features if item.properties.role == "curve"]
     regions = [item for item in features if item.properties.role == "region"]
-    values = np.full(n_obs, np.nan)
-    if not curves and not regions:
-        return values
-    curve_embeddings = {item.properties.embedding_id for item in curves}
-    if len(curve_embeddings) > 1:
-        raise ValueError(
-            "all curves of one process must be drawn on the same embedding"
-        )
     included = [
         r for r in regions if (r.properties.region_mode or "include") == "include"
     ]
-    excluded = [r for r in regions if r.properties.region_mode == "exclude"]
-    scope = np.zeros(n_obs, dtype=bool) if included else np.ones(n_obs, dtype=bool)
+    area = np.zeros(n_obs, dtype=bool) if included else np.ones(n_obs, dtype=bool)
     for region in included:
-        scope |= points_in_polygon(
-            coordinates[region.properties.embedding_id], _ring(region)
+        area |= points_in_polygon(
+            coordinates[region.properties.embedding_id], _rings(region)
         )
-    for region in excluded:
-        scope &= ~points_in_polygon(
-            coordinates[region.properties.embedding_id], _ring(region)
-        )
-    if not curves:
-        values[scope] = 1.0 if included else np.nan
-        return values
-    curve_points = coordinates[curve_embeddings.pop()]
-    scope &= np.isfinite(curve_points).all(axis=1)
-    points = curve_points[scope]
+    for region in regions:
+        if region.properties.region_mode == "exclude":
+            area &= ~points_in_polygon(
+                coordinates[region.properties.embedding_id], _rings(region)
+            )
+    return area
+
+
+def _nearest_curve_values(
+    points: np.ndarray, curves: list[ProcessFeature]
+) -> np.ndarray:
     best = np.full(len(points), np.inf)
     selected = np.full(len(points), np.nan)
     for curve in curves:
@@ -131,12 +161,11 @@ def process_values(
         closer = distance < best
         best[closer] = distance[closer]
         selected[closer] = start + (end - start) * fraction[closer]
-    values[scope] = selected
-    return values
+    return selected
 
 
-def _ring(feature: ProcessFeature) -> np.ndarray:
-    return np.asarray(feature.geometry.coordinates[0], dtype=float)
+def _rings(feature: ProcessFeature) -> list[np.ndarray]:
+    return [np.asarray(ring, dtype=float) for ring in feature.geometry.coordinates]
 
 
 def _now() -> str:
@@ -148,6 +177,7 @@ def _semantic(feature: ProcessFeature) -> dict[str, Any]:
     return {
         "geometry": feature.geometry.model_dump(mode="json"),
         "process_id": properties.process_id,
+        "part_id": properties.part_id,
         "role": properties.role,
         "embedding_id": properties.embedding_id,
         "value_start": properties.value_start,
@@ -205,7 +235,9 @@ class ProcessAnnotations:
                 ProcessSetProgress(
                     id=set_id,
                     drawn_processes=len(statuses),
-                    reviewed_processes=sum(found == {"reviewed"} for found in statuses.values()),
+                    reviewed_processes=sum(
+                        found == {"reviewed"} for found in statuses.values()
+                    ),
                     exported=self._exported_revision(set_id) == document.revision,
                 )
             )
@@ -238,11 +270,16 @@ class ProcessAnnotations:
         )
 
     def _document(
-        self, set_id: str, origin: str, features: list[ProcessFeature]
+        self,
+        set_id: str,
+        origin: str,
+        parts: list[ProcessPart],
+        features: list[ProcessFeature],
     ) -> ProcessDocument:
         revision = canonical_sha256(
             {
                 "annotation_set": set_id,
+                "parts": [item.model_dump(mode="json") for item in parts],
                 "features": [item.model_dump(mode="json") for item in features],
             }
         )
@@ -251,6 +288,7 @@ class ProcessAnnotations:
             annotation_set=set_id,
             revision=revision,
             origin=origin,
+            parts=parts,
             features=features,
         )
 
@@ -258,10 +296,13 @@ class ProcessAnnotations:
         self.project._assert_generated_path(path)
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
+            if raw.get("schema_version") != 2:
+                raise ValueError("expected schema version 2")
+            parts = [ProcessPart.model_validate(item) for item in raw["parts"]]
             features = [ProcessFeature.model_validate(item) for item in raw["features"]]
         except (OSError, KeyError, ValueError) as exc:
             raise ProjectError(f"invalid process drawing {path}: {exc}") from exc
-        return self._document(set_id, origin, features)
+        return self._document(set_id, origin, parts, features)
 
     def document(self, set_id: str) -> ProcessDocument:
         directory = self._set_dir(set_id)
@@ -271,10 +312,19 @@ class ProcessAnnotations:
         ):
             if (directory / name).exists():
                 return self._read(directory / name, set_id, origin)
-        return self._document(set_id, "empty", [])
+        return self._document(set_id, "empty", [], [])
 
-    def _validate(self, set_id: str, features: list[ProcessFeature]) -> None:
+    def _validate(
+        self, set_id: str, parts: list[ProcessPart], features: list[ProcessFeature]
+    ) -> None:
         embeddings = {view.id for view in self.project.views()}
+        by_id: dict[str, ProcessPart] = {}
+        for part in parts:
+            self._validate_id(part.id, "part")
+            self._validate_id(part.process_id, "process")
+            if part.id in by_id:
+                raise ProjectError(f"duplicate part ID: {part.id}")
+            by_id[part.id] = part
         seen: set[str] = set()
         for feature in features:
             properties = feature.properties
@@ -287,53 +337,67 @@ class ProcessAnnotations:
                 raise ProjectError(
                     f"feature {feature.id} belongs to another annotation set"
                 )
+            part = by_id.get(properties.part_id)
+            if part is None or part.process_id != properties.process_id:
+                raise ProjectError(
+                    f"feature {feature.id} belongs to no part of its process"
+                )
+            if properties.role == "curve" and part.status != "value":
+                raise ProjectError(f"part {part.id} has no values, so no curves")
             if properties.embedding_id not in embeddings:
                 raise ProjectError(f"unknown embedding: {properties.embedding_id}")
             geometry = feature.geometry
             expected = "LineString" if properties.role == "curve" else "Polygon"
             if geometry.type != expected:
                 raise ProjectError(f"a {properties.role} must be a {expected}")
-            vertices = (
-                geometry.coordinates
+            lines = (
+                [geometry.coordinates]
                 if geometry.type == "LineString"
-                else geometry.coordinates[0]
-                if len(geometry.coordinates) == 1
-                else None
+                else geometry.coordinates
             )
-            if vertices is None:
-                raise ProjectError("regions must be single-ring polygons")
-            array = np.asarray(vertices, dtype=float)
-            if array.ndim != 2 or array.shape[1] != 2 or not np.isfinite(array).all():
-                raise ProjectError(f"feature {feature.id} has invalid coordinates")
-            if len(array) < (2 if expected == "LineString" else 4):
-                raise ProjectError(f"feature {feature.id} has too few vertices")
+            if not lines:
+                raise ProjectError(f"feature {feature.id} has no rings")
+            for vertices in lines:
+                array = np.asarray(vertices, dtype=float)
+                if (
+                    array.ndim != 2
+                    or array.shape[1] != 2
+                    or not np.isfinite(array).all()
+                ):
+                    raise ProjectError(f"feature {feature.id} has invalid coordinates")
+                if len(array) < (2 if expected == "LineString" else 4):
+                    raise ProjectError(f"feature {feature.id} has too few vertices")
             if properties.role == "curve" and properties.region_mode is not None:
                 raise ProjectError("curves have no region mode")
             if properties.role == "region" and (
                 properties.value_start is not None or properties.value_end is not None
             ):
                 raise ProjectError("regions have no values")
-        by_process: dict[str, set[str]] = {}
+        by_part: dict[str, set[str]] = {}
         for feature in features:
             if feature.properties.role == "curve":
-                by_process.setdefault(feature.properties.process_id, set()).add(
+                by_part.setdefault(feature.properties.part_id, set()).add(
                     feature.properties.embedding_id
                 )
-        for process_id, used in by_process.items():
+        for part_id, used in by_part.items():
             if len(used) > 1:
                 raise ProjectError(
-                    f"curves of process {process_id} span several embeddings: {sorted(used)}"
+                    f"curves of part {part_id} span several embeddings: {sorted(used)}"
                 )
 
     def put_draft(
-        self, set_id: str, expected_revision: str, features: list[ProcessFeature]
+        self,
+        set_id: str,
+        expected_revision: str,
+        parts: list[ProcessPart],
+        features: list[ProcessFeature],
     ) -> ProcessDocument:
         directory = self._set_dir(set_id)
         with self.project.writer_lock():
             current = self.document(set_id)
             if current.revision != expected_revision:
                 raise RevisionConflict("process drawing revision is stale")
-            self._validate(set_id, features)
+            self._validate(set_id, parts, features)
             previous = {item.id: item for item in current.features}
             now = _now()
             stamped = []
@@ -355,7 +419,7 @@ class ProcessAnnotations:
                         }
                     )
                 stamped.append(feature.model_copy(update={"properties": properties}))
-            document = self._document(set_id, "draft", stamped)
+            document = self._document(set_id, "draft", parts, stamped)
             self._write_geojson(directory / "draft.geojson", document)
             return document
 
@@ -386,12 +450,17 @@ class ProcessAnnotations:
                 else item
                 for item in current.features
             ]
-            draft = self._document(set_id, "draft", features)
+            draft = self._document(set_id, "draft", current.parts, features)
             self._write_geojson(directory / "draft.geojson", draft)
+            reviewed_features = [
+                f for f in features if f.properties.review_status == "reviewed"
+            ]
+            reviewed_parts = {f.properties.part_id for f in reviewed_features}
             reviewed = self._document(
                 set_id,
                 "reviewed",
-                [f for f in features if f.properties.review_status == "reviewed"],
+                [p for p in current.parts if p.id in reviewed_parts],
+                reviewed_features,
             )
             self._write_geojson(directory / "reviewed.geojson", reviewed)
             return self._export_locked(draft)
@@ -403,10 +472,14 @@ class ProcessAnnotations:
                 raise RevisionConflict("process drawing revision is stale")
             return self._export_locked(current)
 
-    def preview(self, process_id: str, features: list[ProcessFeature]) -> ProcessValues:
-        selected = [f for f in features if f.properties.process_id == process_id]
+    def preview(
+        self,
+        process_id: str,
+        parts: list[ProcessPart],
+        features: list[ProcessFeature],
+    ) -> ProcessValues:
         try:
-            values = self._values(selected)
+            values, statuses = self._values(process_id, parts, features)
         except ValueError as exc:
             raise ProjectError(str(exc)) from exc
         finite = np.isfinite(values)
@@ -415,24 +488,27 @@ class ProcessAnnotations:
             values=[
                 float(v) if ok else None for v, ok in zip(values, finite, strict=True)
             ],
+            statuses=statuses.tolist(),
             assigned=int(finite.sum()),
+            unknown=int((statuses == "unknown").sum()),
         )
 
-    def _values(self, features: list[ProcessFeature]) -> np.ndarray:
+    def _values(
+        self,
+        process_id: str,
+        parts: list[ProcessPart],
+        features: list[ProcessFeature],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        parts = [p for p in parts if p.process_id == process_id]
+        features = [f for f in features if f.properties.process_id == process_id]
         needed = {f.properties.embedding_id for f in features}
         coordinates = {embedding: self.coordinates(embedding) for embedding in needed}
-        return process_values(features, coordinates, self.project.n_obs)
+        return process_values(parts, features, coordinates, self.project.n_obs)
 
     def _export_locked(self, document: ProcessDocument) -> ProcessExportResponse:
         set_id = document.annotation_set
         directory = self._set_dir(set_id)
-        process_ids = sorted(
-            {
-                f.properties.process_id
-                for f in document.features
-                if f.properties.role == "curve"
-            }
-        )
+        process_ids = sorted({f.properties.process_id for f in document.features})
         columns: dict[str, pa.Array] = {
             "observation_id": pa.array(self.project.observation_ids, pa.string())
         }
@@ -442,23 +518,27 @@ class ProcessAnnotations:
                 f for f in document.features if f.properties.process_id == process_id
             ]
             try:
-                values = self._values(selected)
+                values, statuses = self._values(
+                    process_id, document.parts, document.features
+                )
             except ValueError as exc:
                 raise ProjectError(f"process {process_id}: {exc}") from exc
             columns[process_id] = pa.array(
                 values, pa.float64(), mask=~np.isfinite(values)
             )
-            statuses = {f.properties.review_status for f in selected}
+            columns[f"{process_id}.status"] = pa.array(
+                statuses.tolist(), pa.string()
+            ).dictionary_encode()
+            review = {f.properties.review_status for f in selected}
             summary[process_id] = {
-                "assigned_observations": int(np.isfinite(values).sum()),
+                "observations": {
+                    status: int((statuses == status).sum())
+                    for status in ("value", "unknown", "absent")
+                },
+                "parts": sum(p.process_id == process_id for p in document.parts),
                 "curves": sum(f.properties.role == "curve" for f in selected),
                 "regions": sum(f.properties.role == "region" for f in selected),
-                "curve_embedding": next(
-                    f.properties.embedding_id
-                    for f in selected
-                    if f.properties.role == "curve"
-                ),
-                "review_status": "reviewed" if statuses == {"reviewed"} else "draft",
+                "review_status": "reviewed" if review == {"reviewed"} else "draft",
                 "annotators": sorted({f.properties.annotator for f in selected}),
             }
         values_path = directory / "values.parquet"
@@ -484,10 +564,12 @@ class ProcessAnnotations:
             "observation_index_sha256": self.project.identities.observation_index_sha256,
             "observations": self.project.n_obs,
             "semantics": (
-                "values.parquet has one row per project observation and one column per "
-                "process; a value is the arc-length position of the cell's projection "
-                "onto the nearest drawn curve, and null marks cells outside the process "
-                "regions"
+                "values.parquet has one row per project observation and, per process, "
+                "a value column and a '<process>.status' column; the status is the "
+                "first part holding the cell (value, unknown or absent, and absent for "
+                "cells in no part), and the value, set only for status value, is the "
+                "arc-length position of the cell's projection onto the nearest curve "
+                "of its part, or 1 in a part without curves"
             ),
             "processes": summary,
         }

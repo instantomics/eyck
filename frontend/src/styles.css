@@ -424,6 +424,21 @@ span.tree-main { cursor: default; }
 .feature-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 4px; }
 .feature-row strong, .feature-row small { display: block; font-size: 10px; }
 .feature-row small { color: var(--muted); font: 8px var(--mono); }
+.part-list { display: grid; gap: 4px; margin-bottom: 6px; }
+.part-row { display: grid; gap: 4px; padding: 5px 6px; background: #fff; border: 1px solid var(--border); border-left: 4px solid #236778; cursor: pointer; }
+.part-row.status-unknown { border-left-color: #d68c28; }
+.part-row.status-absent { border-left-color: #8a9295; }
+.part-row.active { border-color: #75a9b3; background: var(--accent-soft); }
+.part-row small { color: var(--muted); font: 8px var(--mono); }
+.part-main { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px; }
+.part-actions { display: flex; gap: 4px; align-items: center; }
+.part-actions .pt-button { min-height: 0; padding: 2px 7px; font-size: 11px; }
+.part-actions select, .feature-part select { flex: 1; min-width: 0; height: 24px; padding: 1px 4px; font-size: 10px; }
+.part-main select { height: 26px; padding: 1px 4px; font-size: 10px; }
+.part-main .pt-input { height: 26px; font-size: 10px; }
+.feature-part { grid-column: 1 / -1; display: flex; }
+.combine-controls { display: grid; gap: 4px; margin: 6px 0; padding: 6px; border: 1px dashed #b3361f; }
+.combine-controls small { color: var(--muted); font-size: 9px; }
 .curve-values { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr auto 1fr auto; gap: 4px; align-items: center; font-size: 9px; }
 .process-assigned { color: var(--muted); font-size: 9px; }
 .drawing-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
@@ -433,16 +448,19 @@ span.tree-main { cursor: default; }
 .vertex-handle { fill: #fff; stroke: #b3361f; stroke-width: 1.5; pointer-events: all; cursor: grab; }
 .vertex-handle:hover { fill: #b3361f; }
 .process-curve.selected polyline:not(.edit-hit) { stroke-width: 3.5; }
-.process-region.selected polygon { stroke-width: 2.5; }
+.process-region.selected path { stroke-width: 2.5; }
 .drawing-overlay marker path { fill: #b3361f; }
 .process-curve polyline:not(.edit-hit) { fill: none; stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
 .process-curve.current polyline:not(.edit-hit) { stroke: #b3361f; }
 .process-curve.current .curve-start { fill: #fff; stroke: #b3361f; stroke-width: 2; }
 .process-curve.other polyline:not(.edit-hit) { stroke: rgba(60, 70, 72, .45); stroke-width: 1.5; stroke-dasharray: 4 3; }
-.process-region polygon { stroke-width: 1.5; }
-.process-region.include.current polygon { fill: rgba(35, 103, 120, .08); stroke: #236778; }
-.process-region.exclude.current polygon { fill: rgba(163, 66, 55, .12); stroke: #a34237; stroke-dasharray: 5 3; }
-.process-region.other polygon { fill: none; stroke: rgba(60, 70, 72, .35); stroke-dasharray: 2 3; }
+.process-region path { stroke-width: 1.5; }
+.process-region.include.current path { fill: rgba(35, 103, 120, .08); stroke: #236778; }
+.process-region.include.current.status-unknown path { fill: rgba(214, 140, 40, .12); stroke: #b06f12; }
+.process-region.include.current.status-absent path { fill: rgba(95, 103, 106, .12); stroke: #5f676a; }
+.process-region.exclude.current path { fill: rgba(163, 66, 55, .12); stroke: #a34237; stroke-dasharray: 5 3; }
+.process-region.other path { fill: none; stroke: rgba(60, 70, 72, .35); stroke-dasharray: 2 3; }
+.process-region.current:not(.active-part), .process-curve.current:not(.active-part) { opacity: .55; }
 .lasso-overlay.curve-stroke polyline { fill: none; stroke: #b3361f; stroke-width: 2.5; }
 @media (max-width: 900px) {
   .process-grid { grid-template-columns: 1fr; overflow-y: auto; }

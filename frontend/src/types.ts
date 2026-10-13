@@ -415,8 +415,19 @@ export interface ProcessDescriptor {
   description: string;
 }
 
+export type ProcessStatus = "value" | "unknown" | "absent";
+
+/** An area of a process; the order of a process's parts is their priority. */
+export interface ProcessPart {
+  id: string;
+  process_id: string;
+  status: ProcessStatus;
+  name: string;
+}
+
 export interface ProcessFeatureProperties {
   process_id: string;
+  part_id: string;
   role: "curve" | "region";
   embedding_id: string;
   annotator: string;
@@ -444,11 +455,12 @@ export interface ProcessFeature {
 
 export interface ProcessDocument {
   type: "FeatureCollection";
-  schema_version: 1;
+  schema_version: 2;
   project_id: string;
   annotation_set: string;
   revision: string;
   origin: "draft" | "reviewed" | "empty";
+  parts: ProcessPart[];
   features: ProcessFeature[];
 }
 
@@ -479,7 +491,9 @@ export interface ProcessIndex {
 export interface ProcessValues {
   process_id: string;
   values: (number | null)[];
+  statuses: ProcessStatus[];
   assigned: number;
+  unknown: number;
 }
 
 export interface ProcessExportResponse {
@@ -487,7 +501,7 @@ export interface ProcessExportResponse {
   revision: string;
   values_path: string;
   report: {
-    processes: Record<string, { assigned_observations: number; review_status: string; curves: number; regions: number }>;
+    processes: Record<string, { observations: Record<ProcessStatus, number>; review_status: string; parts: number; curves: number; regions: number }>;
   };
 }
 

@@ -482,7 +482,9 @@ def create_app(
 
     @app.post(f"{api_root}/{{project_id}}/processes/preview", response_model=ProcessValues)
     def process_preview(project_id: str, body: ProcessPreviewRequest) -> ProcessValues:
-        return _drawings(project_id).preview(body.process_id, body.features)
+        return _drawings(project_id).preview(
+            body.process_id, body.parts, body.features
+        )
 
     @app.get(
         f"{api_root}/{{project_id}}/processes/sets/{{set_id}}",
@@ -501,7 +503,9 @@ def create_app(
         body: ProcessDraftPut,
         if_match: str = Header(..., alias="If-Match"),
     ) -> ProcessDocument:
-        return _drawings(project_id).put_draft(set_id, _if_match(if_match), body.features)
+        return _drawings(project_id).put_draft(
+            set_id, _if_match(if_match), body.parts, body.features
+        )
 
     @app.post(
         f"{api_root}/{{project_id}}/processes/sets/{{set_id}}/review",

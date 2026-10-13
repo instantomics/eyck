@@ -185,6 +185,8 @@ export interface DisplayResult extends ColorResult {
   scale: LegendScale;
   /** Whether any cell has no value; such cells are drawn faint. */
   hasMissing: boolean;
+  /** Whether any cell has an unknown process value. */
+  hasUnknown?: boolean;
 }
 
 /** Cells without a value are pale and mostly transparent, so a value of 0 stays distinguishable. */
@@ -288,6 +290,23 @@ export function displayColors(
     ? { kind: "blend", first: firstRange, second: secondRange }
     : { kind: "continuous", min: firstRange.min, max: firstRange.max, stops: [0, 0.25, 0.5, 0.75, 1].map((t) => cssColor(paletteColor(options.palette, firstRange.max <= firstRange.min ? 1 : t))) };
   return { colors, legend, order: orderBy(keys), scale, hasMissing: missing.some((value) => value === 1) };
+}
+
+/** Cells where a process is active but its value is unknown. */
+const UNKNOWN = [214, 140, 40] as const;
+export const UNKNOWN_COLOR = cssColor(UNKNOWN);
+
+/** Draw cells with an unknown process value in their own colour, on top of cells without a value. */
+export function markUnknown(result: DisplayResult, unknown: Uint8Array | undefined, opacity: number): DisplayResult {
+  if (!unknown || unknown.length * 4 !== result.colors.length || !unknown.some((value) => value === 1)) return result;
+  const colors = result.colors.slice();
+  unknown.forEach((flag, index) => {
+    if (!flag) return;
+    writeColor(colors, index, UNKNOWN);
+    colors[index * 4 + 3] = opacity;
+  });
+  const order = Uint32Array.from([...result.order].sort((a, b) => unknown[a] - unknown[b]));
+  return { ...result, colors, order, hasUnknown: true };
 }
 
 /** Corner colours of the two-channel blend legend. */
