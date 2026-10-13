@@ -23,6 +23,7 @@ from .app import create_app
 RESTART_CHILD_ENV = "EYCK_RESTART_CHILD"
 RESTART_GENERATION_ENV = "EYCK_RESTART_GENERATION"
 RESTART_EXIT_CODE = 75
+RESCAN_SECONDS = 60.0
 
 
 def supervisor_loop(
@@ -68,6 +69,7 @@ def serve(
         restart_callback=request_restart if restart else None,
         proxy_prefix=proxy_prefix,
         project_ids=project_ids,
+        rescan_seconds=RESCAN_SECONDS,
     )
     if open_browser and os.environ.get(RESTART_GENERATION_ENV, "1") == "1":
         webbrowser.open(origin)

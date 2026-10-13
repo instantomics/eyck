@@ -10,17 +10,33 @@ export interface NamedInput {
   dimensions: number;
 }
 
+export interface ProcessSetProgress {
+  id: string;
+  drawn_processes: number;
+  reviewed_processes: number;
+  exported: boolean;
+}
+
 export interface ProjectSummary {
   project_id: string;
   title: string;
   description: string;
+  dataset_id: string;
+  source_owner: string;
   n_observations: number;
   n_features: number;
   n_processes: number;
+  process_sets: ProcessSetProgress[];
+}
+
+export interface DiscoveryProblem {
+  manifest: string;
+  message: string;
 }
 
 export interface ProjectIndex {
   projects: ProjectSummary[];
+  discovery_errors: DiscoveryProblem[];
   csrf_token: string;
   restart_available: boolean;
 }

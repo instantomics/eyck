@@ -453,17 +453,33 @@ class HierarchySummary(StrictModel):
     derived_intersections: int
 
 
+class ProcessSetProgress(StrictModel):
+    id: str
+    drawn_processes: int
+    reviewed_processes: int
+    exported: bool
+
+
 class AnnotationSummary(StrictModel):
     project_id: str
     title: str
     description: str
+    dataset_id: str = ""
+    source_owner: str = ""
     n_observations: int
     n_features: int
     n_processes: int = 0
+    process_sets: list[ProcessSetProgress] = Field(default_factory=list)
+
+
+class DiscoveryProblem(StrictModel):
+    manifest: str
+    message: str
 
 
 class AnnotationIndex(StrictModel):
     projects: list[AnnotationSummary]
+    discovery_errors: list[DiscoveryProblem] = Field(default_factory=list)
     csrf_token: str
     restart_available: bool
 

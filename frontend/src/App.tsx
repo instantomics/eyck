@@ -9,7 +9,6 @@ import {
   exportAnnotations,
   getMarkerProgramResult,
   getProject,
-  getProjects,
   getWorkspace,
   getZoomPoints,
   importClustering,
@@ -26,6 +25,7 @@ import { HierarchyNavigator } from "./HierarchyNavigator";
 import { LabelDagEditor } from "./LabelDagEditor";
 import { MarkerPanel } from "./MarkerPanel";
 import { ProcessWorkbench } from "./ProcessWorkbench";
+import { ProjectOverview } from "./ProjectOverview";
 import { RecipePanel } from "./RecipePanel";
 import { Scatterplot, type SelectionMode } from "./Scatterplot";
 import { SelectionPanel } from "./SelectionPanel";
@@ -38,7 +38,6 @@ import type {
   MarkerProgramResult,
   PointsPayload,
   ProjectDetail,
-  ProjectIndex,
   SavedSelection,
   Scalar,
   SelectionCreate,
@@ -72,19 +71,6 @@ function RestartButton({ csrfToken, available }: { csrfToken: string; available:
       setError(caught instanceof Error ? caught.message : "Restart failed"); setRestarting(false);
     });
   }}>{restarting ? "Restarting..." : "Restart server"}</Button>{error && <span>{error}</span>}</div>;
-}
-
-function Dashboard() {
-  const [index, setIndex] = useState<ProjectIndex | null>(null);
-  const [error, setError] = useState("");
-  useEffect(() => {
-    const controller = new AbortController();
-    getProjects(controller.signal).then(setIndex).catch((caught: unknown) => {
-      if (!controller.signal.aborted) setError(caught instanceof Error ? caught.message : "Could not load projects");
-    });
-    return () => controller.abort();
-  }, []);
-  return <main className="dashboard"><header className="dashboard-header"><strong>Eyck</strong><span>Single-cell annotation</span></header><section className="project-section"><div className="project-list-header"><div><h1>Annotation projects</h1><p>Select a dataset to explore from all loaded observations.</p></div>{index && <RestartButton csrfToken={index.csrf_token} available={index.restart_available} />}</div>{error && <Notice tone="danger">{error}</Notice>}{!index && !error && <Loading label="Loading projects" />}{index?.projects.length === 0 && <div className="empty-state">No Eyck annotation projects were discovered.</div>}{index && index.projects.length > 0 && <div className="project-list">{index.projects.map((project) => <a className="project-row" href={`${basePath}/annotations/${encodeURIComponent(project.project_id)}`} key={project.project_id}><div className="project-row-main"><strong>{project.title}</strong><span>{project.description || project.project_id}</span></div><div className="project-row-meta"><span>{formatCount(project.n_observations)} observations</span><span>{formatCount(project.n_features)} features</span><code>{project.project_id}</code></div><span className="project-open">Open root{project.n_processes > 0 && <span className="project-open-processes" role="link" onClick={(event) => { event.preventDefault(); window.location.href = `${basePath}/annotations/${encodeURIComponent(project.project_id)}/processes`; }}>Draw processes</span>}</span></a>)}</div>}</section></main>;
 }
 
 function SaveIndicator({ status }: { status: ReturnType<typeof useMembershipDraft>["status"] }) {
@@ -389,6 +375,6 @@ function LoadedWorkbench({ project, workspace: initialWorkspace, onProject }: { 
 
 export default function App() {
   const route = routeFromPath();
-  if (!route) return <Dashboard />;
+  if (!route) return <ProjectOverview />;
   return route.processes ? <ProcessWorkbench projectId={route.projectId} /> : <Workbench projectId={route.projectId} />;
 }

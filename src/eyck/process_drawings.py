@@ -33,6 +33,7 @@ from .models import (
     ProcessFeature,
     ProcessIndex,
     ProcessReviewRequest,
+    ProcessSetProgress,
     ProcessSetSummary,
     ProcessValues,
 )
@@ -181,22 +182,43 @@ class ProcessAnnotations:
             self._coordinates[embedding_id] = values
         return self._coordinates[embedding_id]
 
+    def _set_ids(self) -> list[str]:
+        if not self.root.is_dir():
+            return []
+        return sorted(p.name for p in self.root.iterdir() if p.is_dir())
+
+    def _exported_revision(self, set_id: str) -> str | None:
+        report = self._set_dir(set_id) / "export.json"
+        if not report.exists():
+            return None
+        return json.loads(report.read_text(encoding="utf-8"))["revision"]
+
+    def progress(self) -> list[ProcessSetProgress]:
+        """Per annotation set: processes drawn, fully reviewed, and whether the export is current."""
+        progress = []
+        for set_id in self._set_ids():
+            document = self.document(set_id)
+            statuses: dict[str, set[str]] = {}
+            for feature in document.features:
+                statuses.setdefault(feature.properties.process_id, set()).add(
+                    feature.properties.review_status
+                )
+            progress.append(
+                ProcessSetProgress(
+                    id=set_id,
+                    drawn_processes=len(statuses),
+                    reviewed_processes=sum(found == {"reviewed"} for found in statuses.values()),
+                    exported=self._exported_revision(set_id) == document.revision,
+                )
+            )
+        return progress
+
     def index(self) -> ProcessIndex:
         spec = self.project.spec
-        set_ids = (
-            sorted(p.name for p in self.root.iterdir() if p.is_dir())
-            if self.root.is_dir()
-            else []
-        )
         summaries = []
-        for set_id in set_ids:
+        for set_id in self._set_ids():
             document = self.document(set_id)
-            report = self._set_dir(set_id) / "export.json"
-            exported = (
-                json.loads(report.read_text(encoding="utf-8"))["revision"]
-                if report.exists()
-                else None
-            )
+            exported = self._exported_revision(set_id)
             summaries.append(
                 ProcessSetSummary(
                     id=set_id,

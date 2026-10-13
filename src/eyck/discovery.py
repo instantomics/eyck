@@ -340,11 +340,16 @@ def _parse_project(manifest: Path, raw: Any) -> ProjectSpec:
 
 
 def discover_projects(
-    roots: list[str | Path], *, only: set[str] | None = None
+    roots: list[str | Path],
+    *,
+    only: set[str] | None = None,
+    errors: dict[Path, str] | None = None,
 ) -> dict[str, ProjectSpec]:
     """Recursively discover every eyck.toml or fail the complete discovery.
 
-    With ``only``, declarations of other projects are skipped unparsed.
+    With ``only``, declarations of other projects are skipped unparsed. With
+    ``errors``, an invalid or conflicting manifest is recorded there and its
+    projects are skipped, so one broken declaration cannot hide the others.
     """
     manifests: set[Path] = set()
     if not roots:
@@ -361,49 +366,65 @@ def discover_projects(
             )
         else:
             raise DiscoveryError(f"discovery root is not a file or directory: {root}")
-    if not manifests:
+    if not manifests and errors is None:
         raise DiscoveryError("no eyck.toml manifests discovered")
 
     projects: dict[str, ProjectSpec] = {}
     outputs: list[tuple[str, Path]] = []
     for manifest in sorted(manifests):
         try:
-            raw = tomllib.loads(manifest.read_text(encoding="utf-8"))
-        except (OSError, tomllib.TOMLDecodeError) as exc:
-            raise DiscoveryError(f"invalid manifest {manifest}: {exc}") from exc
-        unknown = set(raw) - ROOT_KEYS
-        if unknown:
-            raise DiscoveryError(
-                f"unknown manifest fields in {manifest}: {sorted(unknown)}"
-            )
-        if raw.get("schema_version") != 1:
-            raise DiscoveryError(f"unsupported schema_version in {manifest}")
-        declarations = raw.get("projects")
-        if not isinstance(declarations, list) or not declarations:
-            raise DiscoveryError(f"{manifest} must contain one or more [[projects]]")
-        for declaration in declarations:
-            if (
-                only is not None
-                and isinstance(declaration, dict)
-                and declaration.get("id") not in only
-            ):
-                continue
-            project = _parse_project(manifest, declaration)
-            if project.id in projects:
-                raise DiscoveryError(
-                    f"duplicate project ID across manifests: {project.id}"
-                )
-            for other_id, other_output in outputs:
-                if (
-                    project.output_path == other_output
-                    or project.output_path in other_output.parents
-                    or other_output in project.output_path.parents
-                ):
+            parsed = _parse_manifest(manifest, only)
+            claimed = list(outputs)
+            for project in parsed:
+                if project.id in projects:
                     raise DiscoveryError(
-                        f"conflicting output roots for {other_id} and {project.id}"
+                        f"duplicate project ID across manifests: {project.id}"
                     )
-            projects[project.id] = project
-            outputs.append((project.id, project.output_path))
+                for other_id, other_output in claimed:
+                    if (
+                        project.output_path == other_output
+                        or project.output_path in other_output.parents
+                        or other_output in project.output_path.parents
+                    ):
+                        raise DiscoveryError(
+                            f"conflicting output roots for {other_id} and {project.id}"
+                        )
+                claimed.append((project.id, project.output_path))
+        except DiscoveryError as exc:
+            if errors is None:
+                raise
+            errors[manifest] = str(exc)
+            continue
+        projects.update((project.id, project) for project in parsed)
+        outputs = claimed
+    if errors is not None:
+        return projects
     if only is not None and set(only) - set(projects):
         raise DiscoveryError(f"unknown projects: {sorted(set(only) - set(projects))}")
     return projects
+
+
+def _parse_manifest(manifest: Path, only: set[str] | None) -> list[ProjectSpec]:
+    try:
+        raw = tomllib.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise DiscoveryError(f"invalid manifest {manifest}: {exc}") from exc
+    unknown = set(raw) - ROOT_KEYS
+    if unknown:
+        raise DiscoveryError(f"unknown manifest fields in {manifest}: {sorted(unknown)}")
+    if raw.get("schema_version") != 1:
+        raise DiscoveryError(f"unsupported schema_version in {manifest}")
+    declarations = raw.get("projects")
+    if not isinstance(declarations, list) or not declarations:
+        raise DiscoveryError(f"{manifest} must contain one or more [[projects]]")
+    parsed = [
+        _parse_project(manifest, declaration)
+        for declaration in declarations
+        if only is None
+        or not isinstance(declaration, dict)
+        or declaration.get("id") in only
+    ]
+    ids = [project.id for project in parsed]
+    if len(ids) != len(set(ids)):
+        raise DiscoveryError(f"duplicate project ID in {manifest}")
+    return parsed

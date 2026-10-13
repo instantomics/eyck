@@ -6,7 +6,7 @@ import hmac
 import inspect
 import json
 import secrets
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from .discovery import ProjectSpec, discover_projects
+from .discovery import ProjectSpec
 from .models import (
     AnnotationDetail,
     AnnotationIndex,
@@ -35,6 +35,7 @@ from .models import (
     DeletionConfirm,
     DeletionImpact,
     DeletionRequest,
+    DiscoveryProblem,
     LabelImpact,
     LabelMutation,
     LabelState,
@@ -60,6 +61,7 @@ from .models import (
 )
 from .process_drawings import ProcessAnnotations
 from .project import EyckProject, ProjectError, RevisionConflict
+from .registry import ProjectRegistry
 
 UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
@@ -109,7 +111,7 @@ class RequestLimitMiddleware:
         await send({"type": "http.response.body", "body": payload})
 
 
-def _project_or_404(projects: dict[str, EyckProject], project_id: str) -> EyckProject:
+def _project_or_404(projects: Mapping[str, EyckProject], project_id: str) -> EyckProject:
     try:
         return projects[project_id]
     except KeyError as exc:
@@ -143,17 +145,18 @@ def create_app(
     restart_callback: Callable[[], Any] | None = None,
     proxy_prefix: str = "",
     project_ids: Sequence[str] | None = None,
+    rescan_seconds: float | None = None,
 ) -> FastAPI:
-    specs = (
-        roots_or_specs
+    projects = (
+        ProjectRegistry(specs=roots_or_specs)
         if isinstance(roots_or_specs, dict)
-        else discover_projects(
+        else ProjectRegistry(
             list(roots_or_specs),
             only=set(project_ids) if project_ids else None,
         )
     )
-    projects = {project_id: EyckProject(spec) for project_id, spec in specs.items()}
-    drawings = {project_id: ProcessAnnotations(project) for project_id, project in projects.items()}
+    if rescan_seconds is not None:
+        projects.watch(rescan_seconds)
     csrf_token = secrets.token_urlsafe(32)
     origin_set = {origin.rstrip("/") for origin in allowed_origins}
     normalized_prefix = "/" + proxy_prefix.strip("/") if proxy_prefix.strip("/") else ""
@@ -192,17 +195,30 @@ def create_app(
 
     @app.get(api_root, response_model=AnnotationIndex)
     def project_index() -> AnnotationIndex:
-        return AnnotationIndex(
-            projects=[
+        summaries = []
+        for key in sorted(projects):
+            try:
+                project, drawn = projects[key], projects.drawings(key)
+            except KeyError:
+                continue
+            summaries.append(
                 AnnotationSummary(
-                    project_id=projects[key].spec.id,
-                    title=projects[key].spec.title,
-                    description=projects[key].spec.description,
-                    n_observations=projects[key].n_obs,
-                    n_features=projects[key].n_vars,
-                    n_processes=len(projects[key].spec.processes),
+                    project_id=project.spec.id,
+                    title=project.spec.title,
+                    description=project.spec.description,
+                    dataset_id=project.spec.dataset_id,
+                    source_owner=project.spec.source_owner,
+                    n_observations=project.n_obs,
+                    n_features=project.n_vars,
+                    n_processes=len(project.spec.processes),
+                    process_sets=drawn.progress() if project.spec.processes else [],
                 )
-                for key in sorted(projects)
+            )
+        return AnnotationIndex(
+            projects=summaries,
+            discovery_errors=[
+                DiscoveryProblem(manifest=manifest, message=message)
+                for manifest, message in sorted(projects.errors.items())
             ],
             csrf_token=csrf_token,
             restart_available=restart_callback is not None,
@@ -442,7 +458,7 @@ def create_app(
 
     def _drawings(project_id: str) -> ProcessAnnotations:
         _project_or_404(projects, project_id)
-        return drawings[project_id]
+        return projects.drawings(project_id)
 
     @app.get(
         f"{api_root}/{{project_id}}/observations/{{column}}",
