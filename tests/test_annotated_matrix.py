@@ -133,6 +133,9 @@ present_value = 1
         opened.counts.toarray(),
         np.array([[3, 4, 0], [3, 2, 1], [5, 7, 2]], dtype=np.int32),
     )
+    # mkdtemp stages at 0700; shared source outputs must stay group-usable.
+    assert output.stat().st_mode & 0o7777 == 0o2770
+    assert (output / "manifest.json").stat().st_mode & 0o777 == 0o660
     manifest_before = (output / "manifest.json").read_bytes()
     modified_before = output.stat().st_mtime_ns
     assert materialize_exports(plan, tmp_path / "out") == (output,)

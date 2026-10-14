@@ -24,6 +24,8 @@ import pyarrow.parquet as pq
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from scipy import sparse
 
+from .project import OUTPUT_DIRECTORY_MODE, OUTPUT_FILE_MODE
+
 PLAN_SCHEMA = "eyck.annotated-matrix-export-plan.v1"
 FORMAT_SCHEMA = "eyck.annotated_matrix.v1"
 _MEMBERS = (
@@ -534,6 +536,7 @@ def _materialize_one(
         _check_timeout(deadline)
         _validate_annotated_matrix(temporary, deep=True, deadline=deadline)
         _check_timeout(deadline)
+        _apply_output_modes(temporary)
         target = destination / export.id
         _publish(temporary, target, replace, deadline)
         return target
@@ -1091,6 +1094,16 @@ def _semantic_selection_payload(
         "selected": selected,
         "rejected": dict(rejected),
     }
+
+
+def _apply_output_modes(root: Path) -> None:
+    """Make a ``mkdtemp`` export tree shared before it is renamed into place."""
+    os.chmod(root, OUTPUT_DIRECTORY_MODE)
+    for parent, directories, files in os.walk(root):
+        for name in directories:
+            os.chmod(Path(parent) / name, OUTPUT_DIRECTORY_MODE)
+        for name in files:
+            os.chmod(Path(parent) / name, OUTPUT_FILE_MODE)
 
 
 def _publish(temporary: Path, target: Path, replace: bool, deadline: float) -> None:
