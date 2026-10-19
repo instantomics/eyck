@@ -66,6 +66,7 @@ def pseudobulk_differential_expression(
     min_replicates=2,
     alpha=0.1,
     n_cpus=1,
+    control_genes=None,
 ):
     """DESeq2 statistics for every testable perturbation x group.
 
@@ -75,6 +76,8 @@ def pseudobulk_differential_expression(
     Set `min_cells=None` for actual bulk RNA-seq libraries, which need no
     `n_cells` column. The same replicated count model applies without inventing
     a cell count or imposing a single-cell QC threshold.
+    `control_genes`, when given, are the genes whose median ratios set the size
+    factors, for designs where most features change in one direction.
     Returns one row per tested gene and contrast with the columns in `COLUMNS`.
     """
     from pydeseq2.dds import DeseqDataSet
@@ -83,6 +86,7 @@ def pseudobulk_differential_expression(
 
     logging.getLogger("pydeseq2").setLevel(logging.ERROR)
     genes = np.asarray(genes)
+    control = None if control_genes is None else set(control_genes)
     table = contrasts(
         samples,
         group=group,
@@ -124,6 +128,7 @@ def pseudobulk_differential_expression(
                 ),
                 metadata=metadata,
                 design="~block + perturbation" if len(blocks) > 1 else "~perturbation",
+                control_genes=None if control is None else [g for g in genes[kept] if g in control],
                 inference=inference,
                 quiet=True,
             )
