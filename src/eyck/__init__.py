@@ -1,4 +1,4 @@
-"""Eyck standalone single-cell annotation application."""
+"""Eyck single-cell analysis toolkit and standalone annotation application."""
 
 from importlib.metadata import PackageNotFoundError, version
 
@@ -7,4 +7,35 @@ try:
 except PackageNotFoundError:  # pragma: no cover - source tree without installation
     __version__ = "0+unknown"
 
-__all__ = ["__version__"]
+from .utils import (
+    get_git_root,
+    get_output,
+    get_code,
+    get_results,
+    save,
+    Unpickler,
+    load,
+)
+from . import utils
+from . import flow
+from . import modalities
+m = modalities
+
+# from . import encoder
+from . import processes
+
+__all__ = [
+    "__version__",
+    "get_git_root",
+    "get_output",
+    "get_code",
+    "get_results",
+    "save",
+    "Unpickler",
+    "load",
+    "utils",
+    "flow",
+    "modalities",
+    "processes",
+    "m"
+]
