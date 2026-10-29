@@ -17,6 +17,7 @@ from .utils import (
     load,
 )
 from . import utils
+from . import entities
 from . import flow
 from . import modalities
 m = modalities
@@ -34,6 +35,7 @@ __all__ = [
     "Unpickler",
     "load",
     "utils",
+    "entities",
     "flow",
     "modalities",
     "processes",

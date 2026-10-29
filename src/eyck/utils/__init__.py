@@ -4,6 +4,7 @@ import pickle
 import pandas as pd
 
 from .files import get_git_root, get_output, get_code, get_data, get_software, get_results
+from .h5ad import write_h5ad
 
 __all__ = [
     "get_git_root",
@@ -12,6 +13,7 @@ __all__ = [
     "get_data",
     "get_software",
     "get_results",
+    "write_h5ad",
 ]
 
 def fix_class(obj):

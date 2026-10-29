@@ -122,3 +122,28 @@ def reorder_umap(adata, ordering):
     if cor_y > 0:
         adata.obsm["X_umap"][:, 1] = -adata.obsm["X_umap"][:, 1]
     return adata
+
+
+def score_marker_sets(adata, markers, *, gene_id_resolver=None, groupby=None, suffix="_score"):
+    """Score marker sets per cell and optionally add group-level averages."""
+    if gene_id_resolver is None:
+        from .data import gene_id as gene_id_resolver
+    score_columns = []
+    for marker_name, marker_genes in markers.items():
+        score_column = f"{marker_name}{suffix}"
+        sc.tl.score_genes(
+            adata,
+            gene_list=gene_id_resolver(adata.var, marker_genes),
+            score_name=score_column,
+        )
+        score_columns.append(score_column)
+
+    if groupby is None:
+        return None
+
+    group_scores = adata.obs.groupby(groupby)[score_columns].mean()
+    for marker_name in markers:
+        adata.obs[f"{marker_name}_avg"] = (
+            adata.obs[groupby].map(group_scores[f"{marker_name}{suffix}"]).astype(float)
+        )
+    return group_scores
