@@ -1,13 +1,13 @@
 import numbers
-import polyptich
-import matplotlib as mpl
-import pandas as pd
-from .data import gene_id
-from .data import Transcriptome
-import scanpy as sc
-import numpy as np
-from typing import List
 from types import SimpleNamespace
+
+import matplotlib as mpl
+import numpy as np
+import pandas as pd
+import polyptich
+import scanpy as sc
+
+from .data import Transcriptome, gene_id
 
 try:
     import datashader as ds
@@ -314,7 +314,7 @@ def _category_palette(categories, palette=None):
 
 def plot_embedding(
     transcriptome: Transcriptome,
-    color: List[str] = None,
+    color: str | list[str] | None = None,
     panel_size: float = 1.5,
     cmap="magma",
     cmaps=None,
@@ -675,28 +675,32 @@ def plot_embedding(
 
                 adjustText.adjust_text(
                     texts,
-                    arrowprops=dict(arrowstyle="->", color="black"),
+                    arrowprops={"arrowstyle": "->", "color": "black"},
                     ax=current_ax,
                 )
             except ImportError:
                 pass
 
-        if version == "continuous" and show_norm:
-            if (norm.vmin is not None) and (norm.vmax is not None):
-                text = current_ax.text(
-                    0.0,
-                    0.0,
-                    f"[{norm.vmin:.1f}, {norm.vmax:.1f}]",
-                    fontsize=6,
-                    color="grey",
-                    transform=current_ax.transAxes,
-                )
-                text.set_path_effects(
-                    [
-                        mpl.patheffects.Stroke(linewidth=3, foreground="#FFFFFF"),
-                        mpl.patheffects.Normal(),
-                    ]
-                )
+        if (
+            version == "continuous"
+            and show_norm
+            and (norm.vmin is not None)
+            and (norm.vmax is not None)
+        ):
+            text = current_ax.text(
+                0.0,
+                0.0,
+                f"[{norm.vmin:.1f}, {norm.vmax:.1f}]",
+                fontsize=6,
+                color="grey",
+                transform=current_ax.transAxes,
+            )
+            text.set_path_effects(
+                [
+                    mpl.patheffects.Stroke(linewidth=3, foreground="#FFFFFF"),
+                    mpl.patheffects.Normal(),
+                ]
+            )
 
         # add legend optionally
         if version == "category" and feature_legend in ["under panel", "above panel"]:
@@ -744,7 +748,7 @@ def plot_embedding(
 
 def plot_umap(
     transcriptome: Transcriptome,
-    color: List[str] = None,
+    color: str | list[str] | None = None,
     panel_size: float = 1.5,
     cmap="magma",
     cmaps=None,
@@ -849,7 +853,7 @@ def plot_umap_categorized(
     transcriptome: Transcriptome,
     feature: str,
     color: str,
-    categories: List[str] = None,
+    categories: list[str] | None = None,
     panel_size: float = 1.5,
     fig=None,
     grid=None,
@@ -938,7 +942,17 @@ def plot_umap_categorized(
     return fig
 
 
-def create_continuous_colorbar(ax, norm=mpl.colors.Normalize(0, 1), cmap=None):
+def create_continuous_colorbar(
+    ax, norm=None, cmap=None, label="Expression", ticklabels=None
+):
+    """
+    Draw a vertical colorbar for a continuous feature on ax.
+
+    Ticks sit at the norm bounds and are labelled with their values unless ticklabels gives
+    two labels (for the minimum and maximum), e.g. ["0", "Q95"].
+    """
+    if norm is None:
+        norm = mpl.colors.Normalize(0, 1)
     if cmap is None:
         cmap = mpl.cm.magma
     mappable = mpl.cm.ScalarMappable(
@@ -948,6 +962,9 @@ def create_continuous_colorbar(ax, norm=mpl.colors.Normalize(0, 1), cmap=None):
     import matplotlib.pyplot as plt
 
     colorbar = plt.colorbar(mappable, cax=ax, orientation="vertical", extend="max")
-    colorbar.set_label("Expression")
+    colorbar.set_label(label)
     colorbar.set_ticks([norm.vmin, norm.vmax])
-    colorbar.set_ticklabels(["0", "Q95"])
+    if ticklabels is None:
+        ticklabels = [f"{norm.vmin:.3g}", f"{norm.vmax:.3g}"]
+    colorbar.set_ticklabels(ticklabels)
+    return colorbar
