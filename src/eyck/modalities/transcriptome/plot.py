@@ -1,3 +1,4 @@
+import numbers
 import polyptich
 import matplotlib as mpl
 import pandas as pd
@@ -198,14 +199,13 @@ def _nanquantile(values, q):
     return np.quantile(values, q)
 
 
-def _get_gene_values(adata, cells_oi, gene, layer=None):
+def _get_gene_values(adata, positions, gene, layer=None):
     matrix = adata.layers[layer] if layer is not None else adata.X
     gene_ix = adata.var_names.get_loc(gene)
-    cells_oi = np.asarray(cells_oi)
-    values = matrix[cells_oi, gene_ix]
+    values = matrix[positions, gene_ix]
     if hasattr(values, "toarray"):
         values = values.toarray()
-    return np.asarray(values).ravel()
+    return np.asarray(values, dtype=float).ravel()
 
 
 def _as_transcriptome_view(transcriptome):
@@ -216,6 +216,100 @@ def _as_transcriptome_view(transcriptome):
             var=transcriptome.var,
         )
     return transcriptome
+
+
+def _cell_positions(obs_names, cells_oi):
+    """Integer positions of the selected cells; accepts a boolean mask, positions or cell names."""
+    if cells_oi is None:
+        return np.arange(len(obs_names))
+    cells_oi = np.asarray(cells_oi)
+    if cells_oi.dtype == bool:
+        if len(cells_oi) != len(obs_names):
+            raise ValueError("A boolean cells_oi must have one value per cell")
+        return np.flatnonzero(cells_oi)
+    if np.issubdtype(cells_oi.dtype, np.integer):
+        return cells_oi
+    positions = obs_names.get_indexer(cells_oi)
+    if (positions < 0).any():
+        raise ValueError(f"Unknown cells in cells_oi: {list(cells_oi[positions < 0][:5])}")
+    return positions
+
+
+def _feature_values(transcriptome, feature, positions, layer):
+    """Return the values, label, kind ("continuous", "bool" or "category") and whether it is a gene."""
+    var = transcriptome.var
+    has_symbol = "symbol" in var.columns
+    if feature in var.index:
+        gene = feature
+        label = var.loc[feature, "symbol"] if has_symbol else feature
+    elif has_symbol and feature in var["symbol"].values:
+        gene = gene_id(var, feature, column="symbol")
+        label = feature
+    elif feature in transcriptome.obs.columns:
+        values = transcriptome.obs[feature].iloc[positions].reset_index(drop=True)
+        if pd.api.types.is_bool_dtype(values.dtype):
+            return values.astype(float), feature, "bool", False
+        if pd.api.types.is_numeric_dtype(values.dtype):
+            return values.astype(float), feature, "continuous", False
+        return values.astype("category"), feature, "category", False
+    else:
+        raise ValueError(f"Could not find feature {feature}")
+    values = _get_gene_values(transcriptome.adata, positions, gene, layer=layer)
+    return pd.Series(values), label, "continuous", True
+
+
+def _norm_bound(bound, values):
+    if bound is None or isinstance(bound, numbers.Real):
+        return bound
+    if bound == "0":
+        return 0
+    if bound == "min":
+        return np.nanmin(values)
+    if bound == "max":
+        return np.nanmax(values)
+    if isinstance(bound, str) and bound.startswith("q"):
+        return _nanquantile(values, float(bound[1:]))
+    raise ValueError(f"Unknown normalization bound {bound!r}")
+
+
+def _resolve_norm(spec, values):
+    """Turn a norm specification into a Normalize; NaNs are ignored when computing bounds."""
+    if isinstance(spec, mpl.colors.Normalize):
+        return spec
+    if isinstance(spec, str):
+        if spec == "minmax":
+            spec = ("min", "max")
+        elif spec == "0max":
+            spec = (0, "max")
+        elif spec.startswith("q"):
+            spec = (0, spec)
+    if not (isinstance(spec, tuple) and len(spec) == 2):
+        raise ValueError(f"Unknown normalization {spec!r}")
+    values = np.asarray(values, dtype=float)
+    vmin, vmax = (_norm_bound(bound, values) for bound in spec)
+    if vmax is not None:
+        vmax = vmax + 1e-8
+    return mpl.colors.Normalize(vmin, vmax)
+
+
+def _default_gene_norm(values):
+    vmax = _nanquantile(values, 0.999)
+    if vmax == 0:
+        vmax = np.nanmax(values)
+    return mpl.colors.Normalize(0.0, vmax)
+
+
+def _category_palette(categories, palette=None):
+    """One color per category; categories missing from a given palette get unused default colors."""
+    if palette is None:
+        return pd.Series(get_colors(len(categories)), index=categories)
+    palette = pd.Series(palette).reindex(categories)
+    missing = palette.isna()
+    if missing.any():
+        used = set(palette.dropna())
+        defaults = get_colors(len(categories) + len(used))
+        palette[missing] = [c for c in defaults if c not in used][: missing.sum()]
+    return palette
 
 
 def plot_embedding(
@@ -259,16 +353,22 @@ def plot_embedding(
     transcriptome
         The transcriptome to plot. Can be a Transcriptome object or an AnnData object.
     color
-        The features to plot.
+        The features to plot: genes (by id or symbol) or obs columns.
     panel_size
         The size of the panel.
     cmap
         The colormap to use.
+    cmaps
+        Per-feature colormaps (dictionary), overriding cmap.
     palettes
         The palettes to use for categorical features. If None, a default palette will be used.
         If a dictionary, the keys should be the feature names and the values should be the palettes.
+        Categories missing from a palette get default colors not used by it.
     colors
         The color to use for boolean features.
+    transforms
+        A function, or a dictionary of functions per feature, applied to continuous values before
+        normalization, e.g. np.log1p.
     grid
         The grid to add the panels to.
     embedding
@@ -277,16 +377,24 @@ def plot_embedding(
         The layer to use.
     ax
         The axis to plot on.
+    cells_oi
+        The cells to plot, as a boolean mask, integer positions or cell names.
     norms
-        The normalization to use. If None, the default normalization will be used.
+        The normalization to use, as a single value or a dictionary per feature. A value can be a
+        Normalize, "minmax", "0max", a quantile string such as "q.99" (from 0 to that quantile), or a
+        (min, max) tuple whose bounds are numbers, "0", "min", "max", or quantile strings.
+        If None, (0, "q.95") is used. Genes missing from a dictionary are scaled from 0 to their 99.9%
+        quantile, other features to their 98% quantile.
     legend
-        Where to put the legend in case of categorical features. Can be "on data" or "under panel" or False/None. Can be a single value, list (same order as color) or dictionary (key is feature name).
+        Where to put the legend in case of categorical features. Can be "on data", "under panel",
+        "above panel", or False to only color the cells. Can be a single value, list (same order as
+        color) or dictionary (key is feature name); features missing from a dictionary use "on data".
     sort
         Whether to sort the cells by the feature value, putting the highest value on top.
     title
         The title of the panel. If None, the feature name will be used.
     title_position
-        The position of the title. Can be "top" or "on data".
+        The position of the title. Can be "top", "on data", or a corner such as "top-left".
     active
         Column name in transcriptome.obs (or boolean array-like) indicating active cells to draw in foreground.
         Inactive cells are drawn in the background.
@@ -297,42 +405,31 @@ def plot_embedding(
     inactive_size_scale
         Relative marker size for inactive (background) cells when inactive_size is None.
     nan_color
-        Color used for NaN values in continuous plots. NaNs are excluded when determining norms.
+        Color used for missing values, drawn below the other cells. NaNs are excluded when
+        determining norms.
     """
     transcriptome = _as_transcriptome_view(transcriptome)
+    adata = transcriptome.adata
 
-    # if not isinstance(transcriptome, Transcriptome):
-    #     raise ValueError("transcriptome must be a Transcriptome object")
+    if ax is None and grid is None:
+        fig = polyptich.grid.Figure(
+            polyptich.grid.Wrap(padding_width=0.1, ncol=ncol, padding_height=0.3)
+        )
+        grid = fig.main
 
-    if ax is None:
-        if grid is None:
-            fig = polyptich.grid.Figure(
-                polyptich.grid.Wrap(padding_width=0.1, ncol=ncol, padding_height=0.3)
-            )
-
-            grid = fig.main
-        else:
-            fig = None
-
-    if embedding not in transcriptome.adata.obsm:
+    if embedding not in adata.obsm:
         raise ValueError(f"Could not find embedding {embedding}")
 
-    if cells_oi is None:
-        cells_oi = np.ones(len(transcriptome.adata), dtype=bool)
-
-    plotdata = plotdata_raw = pd.DataFrame(
-        {
-            "x": transcriptome.adata.obsm[embedding][cells_oi, 0],
-            "y": transcriptome.adata.obsm[embedding][cells_oi, 1],
-        }
-    )
+    positions = _cell_positions(adata.obs_names, cells_oi)
+    coordinates = np.asarray(adata.obsm[embedding])[positions]
+    plotdata_raw = pd.DataFrame({"x": coordinates[:, 0], "y": coordinates[:, 1]})
 
     if active is None:
         active_mask = np.ones(len(plotdata_raw), dtype=bool)
     elif isinstance(active, str):
         if active not in transcriptome.obs.columns:
             raise ValueError(f"Could not find active column {active}")
-        active_mask = transcriptome.obs.loc[cells_oi, active].astype(bool).values
+        active_mask = transcriptome.obs[active].iloc[positions].astype(bool).values
     else:
         active_mask = np.asarray(active).astype(bool)
         if len(active_mask) != len(plotdata_raw):
@@ -343,310 +440,164 @@ def plot_embedding(
     elif color is None:
         color = [transcriptome.obs.columns[0]]
 
-    # check legend
-    if isinstance(legend, str):
+    if legend is None:
+        legend = "on data"
+    if isinstance(legend, list):
+        legend = dict(zip(color, legend))
+    elif not isinstance(legend, dict):
         legend = {feature: legend for feature in color}
-    elif legend is False:
-        legend = {feature: False for feature in color}
-    elif legend is None:
-        legend = {feature: "on data" for feature in color}
-    elif isinstance(legend, list):
-        legend = {feature: legend[i] for i, feature in enumerate(color)}
 
     if annotations is None:
         annotations = {}
-
     if palettes is None:
         palettes = {}
     if norms is None:
-        norms = {feature: (0, "q.95") for feature in color}
-    elif isinstance(norms, tuple):
-        norms = {feature: norms for feature in color}
-    elif isinstance(norms, str):
-        norms = {feature: norms for feature in color}
-    elif not isinstance(norms, dict):
+        norms = (0, "q.95")
+    if not isinstance(norms, dict):
         norms = {feature: norms for feature in color}
     if transforms is None:
         transforms = {}
+    elif callable(transforms):
+        transforms = {feature: transforms for feature in color}
     if cmaps is None:
         cmaps = {}
-    if isinstance(colors, str):
-        colors = {g: colors for g in color}
+    if not isinstance(colors, dict):
+        colors = {feature: colors for feature in color}
 
     # determine width and height based on aspect ratio
-    aspect = (plotdata["y"].max() - plotdata["y"].min()) / (
-        plotdata["x"].max() - plotdata["x"].min()
+    aspect = (plotdata_raw["y"].max() - plotdata_raw["y"].min()) / (
+        plotdata_raw["x"].max() - plotdata_raw["x"].min()
     )
     panel_width = panel_size
     panel_height = panel_size * aspect
 
-    cmap_default = cmap
+    if size is None:
+        s = min(5, 10000 / len(plotdata_raw))
+    else:
+        s = size
+    if inactive_size is None:
+        inactive_s = s * inactive_size_scale
+    else:
+        inactive_s = inactive_size
+    scale = 20
+
+    if datashader is True and ds is None:
+        raise ModuleNotFoundError("datashader=True requires the optional datashader package")
+    do_datashader = (
+        ds is not None and active_mask.sum() >= 10000 and datashader is not False
+    )
+
+    def scatter(current_ax, data, **kwargs):
+        kwargs.setdefault("s", s)
+        artist = current_ax.scatter(
+            data["x"], data["y"], linewidths=0, clip_on=False, **kwargs
+        )
+        if rasterized:
+            artist.set_rasterized(True)
+
+    def datashade(current_ax, data, aggregation, **kwargs):
+        dsshow(
+            data,
+            ds.Point("x", "y"),
+            aggregation,
+            aspect="equal",
+            ax=current_ax,
+            plot_width=int(panel_width * 100),
+            plot_height=int(panel_height * 100),
+            height_scale=scale,
+            width_scale=scale,
+            alpha_range=[200, 255],
+            **kwargs,
+        )
 
     for feature in color:
         plotdata = plotdata_raw.copy(deep=False)
-
-        # determine feature and version
-        version = "continuous"
-
-        # expression
-        if (feature in transcriptome.var.index) or (
-            ("symbol" in transcriptome.var.columns)
-            and (feature in transcriptome.var["symbol"].values)
-        ):
-            if feature not in transcriptome.var.index:
-                label = feature
-                gene = gene_id(transcriptome.var, feature, column="symbol")
-            elif feature in transcriptome.var.index:
-                gene = feature
-                if "symbol" in transcriptome.var.columns:
-                    label = transcriptome.var.loc[feature]["symbol"]
-                else:
-                    label = feature
-            else:
-                raise ValueError(f"Could not find gene {feature}")
-
-            plotdata["z"] = _get_gene_values(transcriptome.adata, cells_oi, gene, layer=layer)
-
-            if feature not in norms:
-                q99 = plotdata["z"].quantile(0.999)
-                if q99 == 0:
-                    q99 = plotdata["z"].max()
-                norms[feature] = mpl.colors.Normalize(0.0, q99)
-            elif norms[feature] == "minmax":
-                norms[feature] = mpl.colors.Normalize(
-                    plotdata["z"].min(), plotdata["z"].max()
-                )
-
-        # obs feature
-        elif feature in transcriptome.obs.columns:
-            plotdata["z"] = transcriptome.obs.loc[cells_oi, feature].values
-
-            if plotdata["z"].dtype == "category":
-                plotdata["value"] = plotdata["z"]
-                plotdata["z"] = plotdata["z"]
-                version = "category"
-            elif plotdata["z"].dtype in ["object", "str"]:
-                plotdata["value"] = plotdata["z"]
-                plotdata["z"] = plotdata["z"].astype("category")
-                version = "category"
-            elif plotdata["z"].dtype == "bool":
-                version = "bool"
-                plotdata["z"] = plotdata["z"].astype(int)
-            else:
-                plotdata["z"] = plotdata["z"]
-
-            label = feature
-        else:
-            raise ValueError(f"Could not find feature {feature}")
-
-        if not isinstance(norms, dict):
-            norms = {feature: norms for feature in color}
-
-        if feature not in norms:
-            norms[feature] = (0, "q.98")
+        plotdata["z"], label, version, is_gene = _feature_values(
+            transcriptome, feature, positions, layer
+        )
+        if version == "continuous" and feature in transforms:
+            plotdata["z"] = transforms[feature](plotdata["z"])
 
         if ax is None:
             current_ax = polyptich.grid.Panel((panel_width, panel_height))
         else:
             current_ax = ax
-        if size is None:
-            s = min(5, 10000 / len(plotdata))
-        else:
-            s = size
-        if inactive_size is None:
-            inactive_s = s * inactive_size_scale
-        else:
-            inactive_s = inactive_size
 
         plotdata_active = plotdata.loc[active_mask]
         plotdata_inactive = plotdata.loc[~active_mask]
-
         if len(plotdata_inactive) > 0:
-            scatter_bg = current_ax.scatter(
-                plotdata_inactive["x"],
-                plotdata_inactive["y"],
-                c=inactive_color,
-                s=inactive_s,
-                linewidths=0,
-                clip_on=False,
-            )
-            if rasterized:
-                scatter_bg.set_rasterized(True)
-        scale = 20
+            scatter(current_ax, plotdata_inactive, c=inactive_color, s=inactive_s)
 
-        # check if datashader
-        if datashader is True and ds is None:
-            raise ModuleNotFoundError("datashader=True requires the optional datashader package")
-        do_datashader = (
-            ds is not None and len(plotdata_active) >= 10000 and datashader is not False
-        )
+        # missing values go below the other active cells
+        missing = plotdata_active["z"].isna()
+        if missing.any():
+            scatter(current_ax, plotdata_active.loc[missing], c=nan_color)
+            plotdata_active = plotdata_active.loc[~missing]
 
         # actual plotting depending on version
         if version == "category":
-            if feature in palettes:
-                palette = palettes[feature]
-                if not isinstance(palette, pd.Series):
-                    palette = pd.Series(palette)
-                missing = set(plotdata["z"].cat.categories) - set(palette.index)
-                if missing:
-                    palette = palette.reindex(
-                        plotdata["z"].cat.categories, fill_value="None"
-                    )
-
-                    palette[palette == "None"] = get_colors(len(missing))
-            else:
-                palette = pd.Series(
-                    get_colors(len(plotdata["z"].cat.categories)),
-                    index=plotdata["z"].cat.categories,
-                )
-
+            palette = _category_palette(
+                plotdata["z"].cat.categories, palettes.get(feature)
+            )
             if do_datashader:
-                dsshow(
+                datashade(
+                    current_ax,
                     plotdata_active,
-                    ds.Point("x", "y"),
                     ds.count_cat("z"),
                     color_key=palette.to_dict(),
-                    aspect="equal",
-                    ax=current_ax,
-                    plot_width=int(panel_width * 100),
-                    plot_height=int(panel_height * 100),
-                    height_scale=scale,
-                    width_scale=scale,
-                    alpha_range=[200, 255],
                 )
             else:
-                scatter = current_ax.scatter(
-                    plotdata_active["x"],
-                    plotdata_active["y"],
-                    c=palette[plotdata_active["z"]],
-                    s=s,
-                    linewidths=0,
-                    clip_on=False,
+                scatter(
+                    current_ax,
+                    plotdata_active,
+                    c=palette.loc[plotdata_active["z"].astype(object)].values,
                 )
-                if rasterized:
-                    scatter.set_rasterized(True)
 
         elif version == "continuous":
-            # get cmap
-            if feature in cmaps:
-                cmap = cmaps[feature]
+            cmap_feature = _cmap_with_nan_color(cmaps.get(feature, cmap), nan_color)
+            if feature in norms:
+                norm = _resolve_norm(norms[feature], plotdata["z"])
+            elif is_gene:
+                norm = _default_gene_norm(plotdata["z"])
             else:
-                cmap = cmap_default
-            cmap = _cmap_with_nan_color(cmap, nan_color)
+                norm = _resolve_norm((0, "q.98"), plotdata["z"])
 
-            # get norm
-            if feature not in norms:
-                norm = mpl.colors.Normalize()
-            elif norms[feature] == "minmax":
-                norm = mpl.colors.Normalize(
-                    vmin=plotdata["z"].min(), vmax=plotdata["z"].max()
-                )
-            elif norms[feature] == "0max":
-                norm = mpl.colors.Normalize(vmin=0, vmax=plotdata["z"].max())
-            elif isinstance(norms[feature], str) and "q" in norms[feature]:
-                qmin, qmax = norms[feature].split("q")[0]
-            elif isinstance(norms[feature], tuple):
-                if norms[feature][0] == "0":
-                    zmin = 0
-                elif isinstance(norms[feature][0], (int, float)):
-                    zmin = norms[feature][0]
-                elif norms[feature][0].startswith("q"):
-                    zmin = _nanquantile(plotdata["z"], float(norms[feature][0][1:]))
-                elif norms[feature][0] == "min":
-                    zmin = plotdata["z"].min()
-                else:
-                    zmin = norms[feature][0]
-
-                if norms[feature][1] == "0":
-                    zmax = 0
-                elif isinstance(norms[feature][1], (int, float)):
-                    zmax = norms[feature][1]
-                elif norms[feature][1].startswith("q"):
-                    zmax = _nanquantile(plotdata["z"], float(norms[feature][1][1:]))
-                elif norms[feature][1] == "max":
-                    zmax = plotdata["z"].max()
-                else:
-                    zmax = norms[feature][1]
-                norm = mpl.colors.Normalize(zmin, zmax + 1e-8)
-            elif isinstance(norms[feature], mpl.colors.Normalize):
-                norm = norms[feature]
-            else:
-                raise ValueError(f"Unknown normalization {norms[feature]}")
-
-            # decide datashader or not
             if do_datashader:
-                dsshow(
+                datashade(
+                    current_ax,
                     plotdata_active,
-                    ds.Point("x", "y"),
                     ds.mean("z"),
-                    cmap=cmap,
+                    cmap=cmap_feature,
                     norm=norm,
-                    aspect="equal",
-                    ax=current_ax,
-                    plot_width=int(panel_width * 100),
-                    plot_height=int(panel_height * 100),
-                    height_scale=scale,
-                    width_scale=scale,
-                    alpha_range=[200, 255],
                 )
             else:
                 if sort:
-                    plotdata_active = plotdata_active.sort_values("z", na_position="first")
-                scatter = current_ax.scatter(
-                    plotdata_active["x"],
-                    plotdata_active["y"],
+                    plotdata_active = plotdata_active.sort_values("z")
+                scatter(
+                    current_ax,
+                    plotdata_active,
                     c=plotdata_active["z"].values,
-                    s=s,
-                    cmap=cmap,
+                    cmap=cmap_feature,
                     norm=norm,
                     plotnonfinite=True,
-                    linewidths=0,
-                    clip_on=False,
                 )
-
-                if rasterized:
-                    scatter.set_rasterized(True)
 
         elif version == "bool":
             if do_datashader:
-                dsshow(
+                datashade(
+                    current_ax,
                     plotdata_active,
-                    ds.Point("x", "y"),
                     ds.mean("z"),
-                    cmap=["grey", colors[feature]],
+                    cmap=["grey", colors.get(feature, "red")],
                     norm=mpl.colors.Normalize(vmin=0, vmax=1),
-                    aspect="equal",
-                    ax=current_ax,
-                    plot_width=int(panel_width * 100),
-                    plot_height=int(panel_height * 100),
-                    height_scale=scale,
-                    width_scale=scale,
-                    alpha_range=[200, 255],
                 )
             else:
-                plotdata_active = plotdata_active.sort_values("z")
-                plotdata_1 = plotdata_active[plotdata_active["z"] == 1]
-                plotdata_0 = plotdata_active[plotdata_active["z"] == 0]
-                scatter = current_ax.scatter(
-                    plotdata_0["x"],
-                    plotdata_0["y"],
-                    c="grey",
-                    s=s,
-                    linewidths=0,
-                    clip_on=False,
+                scatter(current_ax, plotdata_active[plotdata_active["z"] == 0], c="grey")
+                scatter(
+                    current_ax,
+                    plotdata_active[plotdata_active["z"] == 1],
+                    c=colors.get(feature, "red"),
                 )
-                if rasterized:
-                    scatter.set_rasterized(True)
-                scatter = current_ax.scatter(
-                    plotdata_1["x"],
-                    plotdata_1["y"],
-                    c=colors[feature],
-                    s=s,
-                    linewidths=0,
-                    clip_on=False,
-                )
-                if rasterized:
-                    scatter.set_rasterized(True)
 
         current_ax.set_xlim(plotdata["x"].min(), plotdata["x"].max())
         current_ax.set_ylim(plotdata["y"].min(), plotdata["y"].max())
@@ -661,20 +612,19 @@ def plot_embedding(
 
         if title is None:
             current_title = label
+        elif isinstance(title, str) or title is False:
+            current_title = title
+        elif isinstance(title, dict):
+            current_title = title.get(feature, label)
+        elif callable(title):
+            current_title = title(feature)
         else:
-            if isinstance(title, str):
-                current_title = title
-            elif isinstance(title, dict):
-                current_title = title.get(feature, label)
-            # check if function
-            elif callable(title):
-                current_title = title(feature)
-            elif title is False:
-                current_title = False
-            else:
-                raise ValueError("title must be a string or a dictionary")
+            raise ValueError("title must be a string, dictionary, function or False")
         if feature in annotations:
-            current_title = label + "\n" + annotations[feature]
+            if current_title is False:
+                current_title = annotations[feature]
+            else:
+                current_title = f"{current_title}\n{annotations[feature]}"
 
         if current_title is False:
             pass
@@ -682,7 +632,7 @@ def plot_embedding(
             current_ax.set_title(current_title, fontsize=10)
         else:
             if title_position == "on data":
-            # get empty corner
+                # get empty corner
                 corner, _ = find_emptiest_corner(plotdata)
             else:
                 corner = title_position
@@ -695,46 +645,41 @@ def plot_embedding(
                 fontsize=8,
                 color="black",
             )
-            # raise ValueError("title_position must be 'top' or 'on data'")
 
-        if version == "category":
-            if legend[feature] == "on data":
-                texts = []
-                plotdata_grouped = plotdata_active.groupby("value", observed=True)[
-                    ["x", "y"]
-                ].median()
-                for i, row in plotdata_grouped.iterrows():
-                    text = current_ax.text(
-                        row["x"],
-                        row["y"],
-                        i,
-                        fontsize=8,
-                        color=palette[i],
-                        fontweight="bold",
-                    )
-                    text.set_path_effects(
-                        [
-                            mpl.patheffects.Stroke(linewidth=3, foreground="#FFFFFFAA"),
-                            mpl.patheffects.Stroke(linewidth=1, foreground="#333333"),
-                            mpl.patheffects.Normal(),
-                        ]
-                    )
-                    texts.append(text)
+        feature_legend = legend.get(feature, "on data")
+        if version == "category" and feature_legend == "on data":
+            texts = []
+            plotdata_grouped = plotdata_active.groupby("z", observed=True)[
+                ["x", "y"]
+            ].median()
+            for i, row in plotdata_grouped.iterrows():
+                text = current_ax.text(
+                    row["x"],
+                    row["y"],
+                    i,
+                    fontsize=8,
+                    color=palette[i],
+                    fontweight="bold",
+                )
+                text.set_path_effects(
+                    [
+                        mpl.patheffects.Stroke(linewidth=3, foreground="#FFFFFFAA"),
+                        mpl.patheffects.Stroke(linewidth=1, foreground="#333333"),
+                        mpl.patheffects.Normal(),
+                    ]
+                )
+                texts.append(text)
 
-                try:
-                    import adjustText
+            try:
+                import adjustText
 
-                    adjustText.adjust_text(
-                        texts,
-                        arrowprops=dict(arrowstyle="->", color="black"),
-                        ax=current_ax,
-                    )
-
-                    # fig.plot_hooks.append(
-                    #     lambda:
-                    # )
-                except ImportError:
-                    pass
+                adjustText.adjust_text(
+                    texts,
+                    arrowprops=dict(arrowstyle="->", color="black"),
+                    ax=current_ax,
+                )
+            except ImportError:
+                pass
 
         if version == "continuous" and show_norm:
             if (norm.vmin is not None) and (norm.vmax is not None):
@@ -754,18 +699,18 @@ def plot_embedding(
                 )
 
         # add legend optionally
-        if version == "category" and legend[feature] in ["under panel", "above panel"]:
+        if version == "category" and feature_legend in ["under panel", "above panel"]:
             height = np.ceil(len(palette) / 2) * 0.15
             legend_ax = polyptich.grid.Panel((panel_width, height))
             legend_ax.set_xlim(0, 1)
             legend_ax.set_ylim(0, 1)
 
             handles = []
-            for i, (category, color) in enumerate(palette.items()):
+            for i, (category, category_color) in enumerate(palette.items()):
                 handles.append(
                     mpl.patches.Circle(
                         (0, 0),
-                        facecolor=color,
+                        facecolor=category_color,
                         edgecolor=None,
                         label=category,
                     )
@@ -779,24 +724,18 @@ def plot_embedding(
             )
             legend_ax.axis("off")
 
-            if legend[feature] == "under panel":
-                current_ax = polyptich.grid.Grid(
-                    [[current_ax], [legend_ax]],
-                    padding_width=0,
-                    padding_height=0,
-                    margin_top=0,
-                    margin_bottom=0,
-                )
+            if feature_legend == "under panel":
+                rows = [[current_ax], [legend_ax]]
             else:
-                current_ax = polyptich.grid.Grid(
-                    [[legend_ax], [current_ax]],
-                    padding_width=0,
-                    padding_height=0,
-                    margin_top=0,
-                    margin_bottom=0,
-                )
+                rows = [[legend_ax], [current_ax]]
+            current_ax = polyptich.grid.Grid(
+                rows,
+                padding_width=0,
+                padding_height=0,
+                margin_top=0,
+                margin_bottom=0,
+            )
 
-        # if ax is None:
         if ax is None:
             grid.add(current_ax)
 
@@ -909,322 +848,93 @@ def plot_umap_categories(
 def plot_umap_categorized(
     transcriptome: Transcriptome,
     feature: str,
-    color,
-    panel_size: float = 2.0,
-    fig=None,
-    grid=None,
-    **kwargs,
-) -> polyptich.grid.Figure:
-    if grid is None:
-        fig = polyptich.grid.Figure(polyptich.grid.Wrap())
-        grid = fig.main
-    for category in transcriptome.obs[feature].cat.categories:
-        ax = grid.add(polyptich.grid.Panel((panel_size, panel_size)))
-        plot_umap(
-            transcriptome=transcriptome,
-            cells_oi=(transcriptome.obs[feature] == category).values,
-            color=color,
-            panel_size=panel_size,
-            ax=ax,
-            title=category,
-            **kwargs,
-        )
-    return fig
-
-
-def plot_umap_categorized(
-    transcriptome: Transcriptome,
-    feature: str,
     color: str,
     categories: List[str] = None,
     panel_size: float = 1.5,
-    cmap="magma",
-    cmaps=None,
-    norms=(0, "q.98"),
-    transforms=None,
     fig=None,
     grid=None,
-    layer=None,
-    embedding="X_umap",
     ax=None,
     cells_oi=None,
     ncol=4,
-    annotations=None,
-    show_norm=True,
-    size=None,
     title=None,
-    rasterized=False,
-    sort=True,
-    background_cells_color = "#DDDDDD",
-    sort_categories = "prevalence",
-):
+    background_cells_color="#DDDDDD",
+    sort_categories=None,
+    **kwargs,
+) -> polyptich.grid.Figure:
     """
     Plot something (`color`) on several panels, one for each category of a categorical feature (`feature`).
+    The cells of the category are drawn on top of all other cells, and colors are shared across panels.
 
     Parameters
     ----------
     transcriptome
         The transcriptome to plot. Can be a Transcriptome object or an AnnData object.
-    color
-        The feature to plot.
     feature
         The categorical feature to split the panels by.
+    color
+        The feature to plot: a gene or an obs column (continuous, boolean or categorical).
     categories
-        The categories of the feature to plot. If None, all categories will be plotted.
+        The categories of the feature to plot. If None, all categories with cells will be plotted.
     panel_size
         The size of the panel.
-    cmap
-        The colormap to use.
     grid
         The grid to add the panels to.
-    embedding
-        The embedding to plot.
-    layer
-        The layer to use.
-    ax
-        The axis to plot on.
-    norms
-        The normalization to use. If None, the default normalization will be used.
-    legend
-        Where to put the legend in case of categorical features. Can be "on data" or "under panel" or False/None. Can be a single value, list (same order as color) or dictionary (key is feature name).
-    sort
-        Whether to sort the cells by the feature value, putting the highest value on top.
+    cells_oi
+        The cells to plot, as a boolean mask, integer positions or cell names.
+    title
+        The panel titles: None for the category names, a string, a dictionary per category, a
+        function of the category, or False.
+    background_cells_color
+        Color of the cells outside the category.
+    sort_categories
+        "prevalence" orders panels from the largest to the smallest category; None keeps the category
+        order of `feature`.
+    **kwargs
+        Passed to plot_embedding, e.g. embedding, norms, cmap, layer, size, datashader or show_norm.
     """
-    transcriptome = _as_transcriptome_view(transcriptome)
-
-    if ax is None:
-        if grid is None:
-            fig = polyptich.grid.Figure(
-                polyptich.grid.Wrap(padding_width=0.1, ncol=ncol, padding_height=0.3)
-            )
-
-            grid = fig.main
-        else:
-            fig = None
-
-    if embedding not in transcriptome.adata.obsm:
-        raise ValueError(f"Could not find embedding {embedding}")
-
-    if cells_oi is None:
-        cells_oi = np.ones(len(transcriptome.adata), dtype=bool)
-
-    plotdata = pd.DataFrame(
-        {
-            "x": transcriptome.adata.obsm[embedding][cells_oi, 0],
-            "y": transcriptome.adata.obsm[embedding][cells_oi, 1],
-        }
-    )
-    print(1)
-
-    if annotations is None:
-        annotations = None
-    if norms is None:
-        norms = (0, "q.95")
-    elif isinstance(norms, tuple):
-        norms = {color: norms}
-    elif isinstance(norms, str):
-        norms = {color: norms}
-    elif not isinstance(norms, dict):
-        norms = {color: norms}
-    if transforms is None:
-        transforms = None
-    if cmaps is None:
-        cmaps = None
-
-    # determine width and height based on aspect ratio
-    aspect = (plotdata["y"].max() - plotdata["y"].min()) / (
-        plotdata["x"].max() - plotdata["x"].min()
-    )
-    panel_width = panel_size
-    panel_height = panel_size * aspect
-
-    cmap_default = cmap
-
-
-    # color
-    if (color in transcriptome.var.index) or (
-        ("symbol" in transcriptome.var.columns)
-        and (color in transcriptome.var["symbol"].values)
-    ):
-        if color not in transcriptome.var.index:
-            label = color
-            gene = gene_id(transcriptome.var, color, column="symbol")
-        elif color in transcriptome.var.index:
-            gene = color
-            if "symbol" in transcriptome.var.columns:
-                label = transcriptome.var.loc[color]["symbol"]
-            else:
-                label = color
-        else:
-            raise ValueError(f"Could not find gene {color}")
-
-        plotdata["z"] = _get_gene_values(transcriptome.adata, cells_oi, gene, layer=layer)
-
-        if color not in norms:
-            q99 = plotdata["z"].quantile(0.999)
-            if q99 == 0:
-                q99 = plotdata["z"].max()
-            norms[color] = mpl.colors.Normalize(0.0, q99)
-        elif norms[color] == "minmax":
-            norms[color] = mpl.colors.Normalize(
-                plotdata["z"].min(), plotdata["z"].max()
-            )
-    elif color in transcriptome.obs.columns:
-        plotdata["z"] = transcriptome.obs.loc[cells_oi, color].values
-
-        print(plotdata["z"].dtype)
-        if plotdata["z"].dtype == "category":
-            plotdata["value"] = plotdata["z"]
-            plotdata["z"] = plotdata["z"]
-            version = "category"
-        elif plotdata["z"].dtype in ["object", "str"]:
-            plotdata["value"] = plotdata["z"]
-            plotdata["z"] = plotdata["z"].astype("category")
-            version = "category"
-        elif plotdata["z"].dtype == "bool":
-            version = "bool"
-            plotdata["z"] = plotdata["z"].astype(int)
-        else:
-            plotdata["z"] = plotdata["z"]
-        label = color
-    else:
-        raise ValueError(f"Could not find color {color}")
-    
-    # feature
-    plotdata["feature"] = transcriptome.obs.loc[cells_oi, feature].values
-
-    if size is None:
-        s = min(5, 10000 / len(plotdata))
-    else:
-        s = size
-
-    # get cmap
-    if cmap is None:
-        cmap = cmap_default
-    if isinstance(cmap, str):
-        cmap = mpl.colormaps[cmap]
-
-    # get norm
-    if color not in norms:
-        norm = mpl.colors.Normalize()
-    elif norms[color] == "minmax":
-        norm = mpl.colors.Normalize(
-            vmin=plotdata["z"].min(), vmax=plotdata["z"].max()
-        )
-    elif norms[color] == "0max":
-        norm = mpl.colors.Normalize(vmin=0, vmax=plotdata["z"].max())
-    elif isinstance(norms[color], str) and "q" in norms[color]:
-        qmin, qmax = norms[color].split("q")[0]
-    elif isinstance(norms[color], tuple):
-        if norms[color][0] == "0":
-            zmin = 0
-        elif isinstance(norms[color][0], (int, float)):
-            zmin = norms[color][0]
-        elif norms[color][0].startswith("q"):
-            zmin = np.quantile(plotdata["z"], float(norms[color][0][1:]))
-        elif norms[color][0] == "min":
-            zmin = plotdata["z"].min()
-        else:
-            zmin = norms[color][0]
-
-        if norms[color][1] == "0":
-            zmax = 0
-        elif isinstance(norms[color][1], (int, float)):
-            zmax = norms[color][1]
-        elif norms[color][1].startswith("q"):
-            zmax = np.quantile(plotdata["z"], float(norms[color][1][1:]))
-        elif norms[color][1] == "max":
-            zmax = plotdata["z"].max()
-        else:
-            zmax = norms[color][1]
-        norm = mpl.colors.Normalize(zmin, zmax + 1e-8)
-    elif isinstance(norms[color], mpl.colors.Normalize):
-        norm = norms[color]
-    else:
-        raise ValueError(f"Unknown normalization {norms[color]}")
+    view = _as_transcriptome_view(transcriptome)
+    positions = _cell_positions(view.adata.obs_names, cells_oi)
+    groups = pd.Categorical(view.obs[feature].iloc[positions])
+    counts = pd.Series(groups).value_counts(sort=False)
+    counts = counts[counts > 0]
 
     if sort_categories == "prevalence":
-        category_counts = plotdata["feature"].value_counts()
-        category_order = category_counts.sort_values(ascending=False).index
-        plotdata["feature"] = pd.Categorical(plotdata["feature"], categories=category_order, ordered=True)
+        counts = counts.sort_values(ascending=False, kind="stable")
+    elif sort_categories is not None:
+        raise ValueError("sort_categories must be 'prevalence' or None")
+    order = [
+        category
+        for category in counts.index
+        if categories is None or category in categories
+    ]
 
-    for feature, plotdata_feature in plotdata.groupby("feature", observed=True):
-        if categories is not None:
-            if feature not in categories:
-                continue
-        current_ax = polyptich.grid.Panel((panel_width, panel_height))
-
-        if sort:
-            plotdata_feature = plotdata_feature.sort_values("z")
-        scatter = current_ax.scatter(
-            plotdata["x"],
-            plotdata["y"],
-            s=s*0.5,
-            color = background_cells_color,
-            linewidths=0,
-            clip_on=False,
-        )  
-        scatter = current_ax.scatter(
-            plotdata_feature["x"],
-            plotdata_feature["y"],
-            c=plotdata_feature["z"].values,
-            s=s,
-            cmap=cmap,
-            norm=norm,
-            linewidths=0,
-            clip_on=False,
+    if ax is None and grid is None:
+        fig = polyptich.grid.Figure(
+            polyptich.grid.Wrap(padding_width=0.1, ncol=ncol, padding_height=0.3)
         )
+        grid = fig.main
 
-        if rasterized:
-            scatter.set_rasterized(True)
-
-        current_ax.set_xlim(plotdata["x"].min(), plotdata["x"].max())
-        current_ax.set_ylim(plotdata["y"].min(), plotdata["y"].max())
-        current_ax.spines["top"].set_visible(False)
-        current_ax.spines["right"].set_visible(False)
-        current_ax.spines["bottom"].set_visible(False)
-        current_ax.spines["left"].set_visible(False)
-        current_ax.set_xticks([])
-        current_ax.set_yticks([])
-
+    for category in order:
         if title is None:
-            current_title = feature
+            category_title = category
+        elif isinstance(title, dict):
+            category_title = title.get(category, category)
+        elif callable(title):
+            category_title = title(category)
         else:
-            if isinstance(title, str):
-                current_title = title
-            elif isinstance(title, dict):
-                current_title = title.get(feature, label)
-            # check if function
-            elif callable(title):
-                current_title = title(feature)
-            elif title is False:
-                current_title = ""
-            else:
-                raise ValueError("title must be a string or a dictionary")
-
-        current_ax.set_title(current_title, fontsize=10)
-
-        if show_norm:
-            if (norm.vmin is not None) and (norm.vmax is not None):
-                text = current_ax.text(
-                    0.0,
-                    0.0,
-                    f"[{norm.vmin:.1f}, {norm.vmax:.1f}]",
-                    fontsize=6,
-                    color="grey",
-                    transform=current_ax.transAxes,
-                )
-                text.set_path_effects(
-                    [
-                        mpl.patheffects.Stroke(linewidth=3, foreground="#FFFFFF"),
-                        mpl.patheffects.Normal(),
-                    ]
-                )
-
-        # if ax is None:
-        if ax is None:
-            grid.add(current_ax)
-
+            category_title = title
+        plot_embedding(
+            transcriptome,
+            color=[color],
+            panel_size=panel_size,
+            grid=grid,
+            ax=ax,
+            cells_oi=positions,
+            active=np.asarray(groups == category),
+            inactive_color=background_cells_color,
+            title=category_title,
+            **kwargs,
+        )
     return fig
 
 
@@ -1239,5 +949,5 @@ def create_continuous_colorbar(ax, norm=mpl.colors.Normalize(0, 1), cmap=None):
 
     colorbar = plt.colorbar(mappable, cax=ax, orientation="vertical", extend="max")
     colorbar.set_label("Expression")
-    colorbar.set_ticks([0, 1])
+    colorbar.set_ticks([norm.vmin, norm.vmax])
     colorbar.set_ticklabels(["0", "Q95"])
