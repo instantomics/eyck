@@ -698,9 +698,7 @@ def plot_embedding(
             # raise ValueError("title_position must be 'top' or 'on data'")
 
         if version == "category":
-            if legend[feature] is False:
-                continue
-            elif legend[feature] == "on data":
+            if legend[feature] == "on data":
                 texts = []
                 plotdata_grouped = plotdata_active.groupby("value", observed=True)[
                     ["x", "y"]
