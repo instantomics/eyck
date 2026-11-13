@@ -5,7 +5,6 @@ import pathlib
 
 import numpy as np
 import pandas as pd
-import tqdm.auto as tqdm
 import functools
 
 from eyck.flow import TSV, Flow, PathLike, Stored
@@ -185,49 +184,3 @@ class Regions(Flow):
 
     def __len__(self):
         return self.n_regions
-
-
-def select_tss_from_fragments(
-    transcripts: pd.DataFrame,
-    fragments_file: PathLike,
-    window: [np.ndarray, tuple] = (-100, 100),
-) -> pd.DataFrame:
-    """
-    Select the TSS with the most fragments within a window of the TSS
-
-    Parameters:
-        transcripts:
-            Dataframe of transcripts, with columns chrom, tss, ensembl_gene_id.
-        fragments_file:
-            Path to fragments file
-        window:
-            Window around the TSS to count fragments
-    Returns:
-        Dataframe of transcripts, with columns chrom, tss and n_fragments, with index being the gene id
-    """
-    if not (
-        [col in transcripts.columns for col in ["chrom", "tss", "ensembl_gene_id"]]
-    ):
-        raise ValueError(
-            "Transcripts should have columns chrom, tss, ensembl_gene_id. "
-        )
-
-    import pysam
-
-    fragments_tabix = pysam.TabixFile(str(fragments_file))
-
-    nfrags = []
-    for chrom, tss in tqdm.tqdm(
-        zip(transcripts["chrom"], transcripts["tss"]), total=transcripts.shape[0]
-    ):
-        frags = list(fragments_tabix.fetch(chrom, tss + window[0], tss + window[1]))
-        nfrags.append(len(frags))
-    transcripts["n_fragments"] = nfrags
-    selected_transcripts = (
-        transcripts.reset_index()
-        .sort_values("n_fragments", ascending=False)
-        .groupby("ensembl_gene_id")
-        .first()
-    )
-    selected_transcripts.index.name = "gene"
-    return selected_transcripts

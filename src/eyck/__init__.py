@@ -22,7 +22,6 @@ from . import flow
 from . import modalities
 m = modalities
 
-# from . import encoder
 from . import processes
 
 __all__ = [

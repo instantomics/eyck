@@ -8,8 +8,6 @@ from .objects import (
     CompressedNumpyInt64,
     TSV,
     StoredDict,
-    DataArray,
-    Dataset,
 )
 from .flow import (
     Flow,

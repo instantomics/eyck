@@ -1,25 +1,15 @@
-# uv add setuptools_git_versioning gh twine build
-python -m setuptools_git_versioning
+#!/usr/bin/env bash
+# Release eyck: ./dist.sh <version>, from a clean main that is already pushed.
+# The version comes from the git tag (setuptools_scm).
+set -euo pipefail
+version="${1:?usage: ./dist.sh <version>}"
+test -z "$(git status --porcelain --untracked-files=no)" || { echo "commit your changes first" >&2; exit 1; }
 
-version="0.1.0"
+git tag -a "v${version}" -m "v${version}"
+rm -rf dist
+uv build --out-dir dist
+git push origin main "v${version}"
+gh release create "v${version}" -t "v${version}" -n "v${version}" dist/eyck-"${version}"*
 
-git add .
-git commit -m "version v${version}"
-
-git tag -a v${version} -m "v${version}"
-
-python -m build
-
-# optional: upload test
-# twine upload --repository testpypi dist/eyck-${version}.tar.gz --verbose
-
-git push --tags
-git push
-
-# curl -sS https://webi.sh/gh | sh
-~/.local/bin/gh release create v${version} -t "v${version}" -n "v${version}" dist/eyck-${version}.tar.gz
-
-# pip install twine
-twine upload dist/eyck-${version}.tar.gz --verbose
-
-python -m build --wheel
+set -a; . ~/.secrets/pypi.env; set +a
+uv publish dist/eyck-"${version}"*

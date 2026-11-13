@@ -1,6 +1,3 @@
-# from . import fragments
-# from .fragments import Fragments
-
 from . import transcriptome
 from .transcriptome import Transcriptome
 t = transcriptome
@@ -12,4 +9,4 @@ from .regions import Regions
 
 from . import folds
 
-__all__ = ["Fragments", "Transcriptome", "Regions", "folds", "regions", "t"]
+__all__ = ["Transcriptome", "Clustering", "Regions", "folds", "regions", "t"]

@@ -194,8 +194,6 @@ class Flow(metaclass=Flowable):
         import json
 
         from . import tipyte
-        import pkg_resources
-        from IPython.display import HTML, display
         import random
 
         lines = []
@@ -228,7 +226,7 @@ class Flow(metaclass=Flowable):
 
         # create template
         template = tipyte.template_to_function(
-            pkg_resources.resource_filename("eyck", "flow/flow_template.jinja2"),
+            str(pathlib.Path(__file__).with_name("flow_template.jinja2")),
             escaper=lambda x: x,
         )
 

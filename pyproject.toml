@@ -21,6 +21,7 @@ dependencies = [
     "fastapi>=0.115",
     "filelock>=3.13",
     "leidenalg>=0.10",
+    "matplotlib>=3.8",
     "numpy>=1.26",
     "pandas>=2.1",
     "polyptich",
@@ -61,8 +62,6 @@ dev = [
     "pillow",  # for mkdocs social
     "mkdocs-awesome-pages-plugin",
     "setuptools_scm",
-    # "faiss-cpu",
-    "Cython",
 ]
 test = [
     "httpx2>=2.0",
@@ -74,7 +73,7 @@ test = [
 dev = ["polyptich"]
 
 [tool.setuptools.package-data]
-eyck = ["web/assets/*"]
+eyck = ["web/assets/*", "flow/flow_template.jinja2"]
 
 [tool.setuptools_scm]
 
